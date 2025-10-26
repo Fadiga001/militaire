@@ -1,0 +1,692 @@
+-- ============================================================================
+-- BASE DE DONNÉES VIDE - SYSTÈME DE GESTION DES DÉTENUS MILITAIRES
+-- Version: 2.0
+-- Date: 26 octobre 2025
+-- Description: Structure complète sans données
+-- ============================================================================
+
+-- Suppression de la base existante et recréation
+DROP DATABASE IF EXISTS detenusMilitaires;
+CREATE DATABASE detenusMilitaires 
+    DEFAULT CHARACTER SET utf8mb4 
+    DEFAULT COLLATE utf8mb4_unicode_ci;
+
+USE detenusMilitaires;
+
+-- Configuration
+SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
+SET time_zone = "+00:00";
+SET NAMES utf8mb4;
+
+-- ============================================================================
+-- 1. TABLES DE RÉFÉRENCE (Nomenclatures)
+-- ============================================================================
+
+-- Table des grades militaires
+CREATE TABLE grades (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    code VARCHAR(10) NOT NULL UNIQUE COMMENT 'Code du grade (ex: SCH, MDL)',
+    libelle VARCHAR(100) NOT NULL COMMENT 'Libellé complet',
+    hierarchie INT NOT NULL COMMENT 'Ordre hiérarchique (1=plus bas)',
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    INDEX idx_code (code),
+    INDEX idx_active (is_active)
+) ENGINE=InnoDB;
+
+-- Table des unités militaires
+CREATE TABLE unites (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    code VARCHAR(20) NOT NULL UNIQUE,
+    nom VARCHAR(255) NOT NULL,
+    type ENUM('ARMEE', 'GENDARMERIE', 'POLICE', 'AUTRES') NOT NULL,
+    localisation VARCHAR(255),
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    INDEX idx_type (type),
+    INDEX idx_active (is_active)
+) ENGINE=InnoDB;
+
+-- Table des catégories d'infractions
+CREATE TABLE infractions (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    code VARCHAR(50) NOT NULL UNIQUE,
+    libelle VARCHAR(255) NOT NULL,
+    categorie ENUM('CRIME', 'DELIT', 'CONTRAVENTION') NOT NULL,
+    duree_detention_provisoire_mois INT COMMENT 'Durée max détention provisoire',
+    gravite TINYINT NOT NULL COMMENT '1=faible, 10=grave',
+    description TEXT,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    INDEX idx_categorie (categorie),
+    INDEX idx_gravite (gravite)
+) ENGINE=InnoDB;
+
+-- Table des lieux de détention
+CREATE TABLE lieux_detention (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    code VARCHAR(20) NOT NULL UNIQUE,
+    nom VARCHAR(255) NOT NULL,
+    type ENUM('PRISON_MILITAIRE', 'PRISON_CIVILE', 'MAISON_ARRET', 'AUTRES') NOT NULL,
+    capacite INT COMMENT 'Capacité d\'accueil',
+    adresse TEXT,
+    ville VARCHAR(100),
+    telephone VARCHAR(20),
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    INDEX idx_type (type),
+    INDEX idx_ville (ville)
+) ENGINE=InnoDB;
+
+-- ============================================================================
+-- 2. GESTION DES UTILISATEURS
+-- ============================================================================
+
+CREATE TABLE users (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL COMMENT 'Hash Argon2id ou bcrypt',
+    nom VARCHAR(100) NOT NULL,
+    prenom VARCHAR(100) NOT NULL,
+    role ENUM('ADMIN', 'USER', 'READONLY') NOT NULL DEFAULT 'USER',
+    is_active BOOLEAN DEFAULT TRUE,
+    
+    -- Sécurité
+    last_login_at TIMESTAMP NULL,
+    last_login_ip VARCHAR(45),
+    failed_login_attempts TINYINT DEFAULT 0,
+    locked_until TIMESTAMP NULL,
+    password_changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    must_change_password BOOLEAN DEFAULT FALSE,
+    
+    -- Métadonnées
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_by INT UNSIGNED,
+    
+    INDEX idx_username (username),
+    INDEX idx_email (email),
+    INDEX idx_role (role),
+    INDEX idx_active (is_active)
+) ENGINE=InnoDB;
+
+-- ============================================================================
+-- 3. GESTION DES DÉTENUS
+-- ============================================================================
+
+CREATE TABLE detenus (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    matricule VARCHAR(50) UNIQUE COMMENT 'Matricule unique du détenu',
+    
+    -- Identité
+    nom VARCHAR(100) NOT NULL,
+    prenoms VARCHAR(255) NOT NULL,
+    nom_complet VARCHAR(355) GENERATED ALWAYS AS (CONCAT(nom, ' ', prenoms)) STORED,
+    date_naissance DATE,
+    lieu_naissance VARCHAR(255),
+    nationalite VARCHAR(100) DEFAULT 'Ivoirienne',
+    sexe ENUM('M', 'F') NOT NULL,
+    situation_matrimoniale ENUM('CELIBATAIRE', 'MARIE', 'DIVORCE', 'VEUF'),
+    nombre_enfants TINYINT DEFAULT 0,
+    
+    -- Informations militaires
+    grade_id INT UNSIGNED NOT NULL,
+    unite_id INT UNSIGNED NOT NULL,
+    matricule_militaire VARCHAR(50),
+    date_incorporation DATE,
+    
+    -- Contacts
+    telephone VARCHAR(20),
+    email VARCHAR(255),
+    adresse TEXT,
+    personne_contact_nom VARCHAR(255),
+    personne_contact_telephone VARCHAR(20),
+    personne_contact_relation VARCHAR(50),
+    
+    -- Fichiers
+    photo_path VARCHAR(255),
+    
+    -- Statut
+    statut_actuel ENUM('DETENTION_PROVISOIRE', 'CONDAMNE', 'LIBRE', 'EVADE', 'DECEDE') 
+        NOT NULL DEFAULT 'DETENTION_PROVISOIRE',
+    date_changement_statut TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    -- Flags
+    is_multrecidiviste BOOLEAN DEFAULT FALSE,
+    nombre_condamnations TINYINT DEFAULT 0,
+    is_active BOOLEAN DEFAULT TRUE,
+    is_deleted BOOLEAN DEFAULT FALSE,
+    deleted_at TIMESTAMP NULL,
+    deleted_by INT UNSIGNED,
+    
+    -- Métadonnées
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_by INT UNSIGNED,
+    updated_by INT UNSIGNED,
+    
+    -- Contraintes
+    FOREIGN KEY (grade_id) REFERENCES grades(id),
+    FOREIGN KEY (unite_id) REFERENCES unites(id),
+    FOREIGN KEY (created_by) REFERENCES users(id),
+    FOREIGN KEY (updated_by) REFERENCES users(id),
+    FOREIGN KEY (deleted_by) REFERENCES users(id),
+    
+    -- Index
+    INDEX idx_matricule (matricule),
+    INDEX idx_nom_complet (nom_complet),
+    INDEX idx_grade (grade_id),
+    INDEX idx_unite (unite_id),
+    INDEX idx_statut (statut_actuel),
+    INDEX idx_multrecidiviste (is_multrecidiviste),
+    INDEX idx_deleted (is_deleted),
+    FULLTEXT idx_search (nom, prenoms)
+) ENGINE=InnoDB;
+
+-- ============================================================================
+-- 4. GESTION DES CONDAMNATIONS
+-- ============================================================================
+
+CREATE TABLE condamnations (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    numero_dossier VARCHAR(50) UNIQUE NOT NULL,
+    detenu_id INT UNSIGNED NOT NULL,
+    
+    -- Infraction
+    infraction_id INT UNSIGNED NOT NULL,
+    infraction_details TEXT COMMENT 'Détails spécifiques',
+    date_infraction DATE,
+    lieu_infraction VARCHAR(255),
+    
+    -- Procédure judiciaire
+    date_oip DATE COMMENT 'Ouverture Information Préliminaire',
+    date_omlp DATE COMMENT 'Ordonnance Mise en Liberté Provisoire',
+    date_jugement DATE NOT NULL,
+    numero_jugement VARCHAR(100),
+    tribunal VARCHAR(255),
+    
+    -- Détention provisoire
+    date_mandat_depot DATE,
+    date_liberation_mandat DATE,
+    
+    -- Peine prononcée
+    peine_valeur INT NOT NULL,
+    peine_unite ENUM('JOUR', 'MOIS', 'ANNEE') NOT NULL DEFAULT 'ANNEE',
+    peine_jours_total INT GENERATED ALWAYS AS (
+        CASE peine_unite
+            WHEN 'JOUR' THEN peine_valeur
+            WHEN 'MOIS' THEN peine_valeur * 30
+            WHEN 'ANNEE' THEN peine_valeur * 365
+        END
+    ) STORED,
+    
+    -- Dates calculées
+    date_liberation_theorique DATE,
+    date_liberation_effective DATE,
+    jours_detention_provisoire_oip INT DEFAULT 0,
+    jours_detention_provisoire_mandat INT DEFAULT 0,
+    jours_detention_provisoire_total INT GENERATED ALWAYS AS (
+        jours_detention_provisoire_oip + jours_detention_provisoire_mandat
+    ) STORED,
+    
+    -- Exécution
+    lieu_detention_id INT UNSIGNED,
+    date_debut_execution DATE,
+    date_liberation_reelle DATE,
+    motif_liberation VARCHAR(255),
+    
+    -- Statut
+    statut ENUM('EN_COURS', 'TERMINEE', 'SUSPENDUE', 'ANNULEE') NOT NULL DEFAULT 'EN_COURS',
+    is_principale BOOLEAN DEFAULT TRUE,
+    observations TEXT,
+    
+    -- Flags
+    is_active BOOLEAN DEFAULT TRUE,
+    is_deleted BOOLEAN DEFAULT FALSE,
+    deleted_at TIMESTAMP NULL,
+    deleted_by INT UNSIGNED,
+    
+    -- Métadonnées
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_by INT UNSIGNED,
+    updated_by INT UNSIGNED,
+    
+    -- Contraintes
+    FOREIGN KEY (detenu_id) REFERENCES detenus(id) ON DELETE RESTRICT,
+    FOREIGN KEY (infraction_id) REFERENCES infractions(id),
+    FOREIGN KEY (lieu_detention_id) REFERENCES lieux_detention(id),
+    FOREIGN KEY (created_by) REFERENCES users(id),
+    FOREIGN KEY (updated_by) REFERENCES users(id),
+    FOREIGN KEY (deleted_by) REFERENCES users(id),
+    
+    CONSTRAINT chk_dates CHECK (date_jugement >= date_oip OR date_oip IS NULL),
+    CONSTRAINT chk_peine CHECK (peine_valeur > 0),
+    
+    -- Index
+    INDEX idx_numero_dossier (numero_dossier),
+    INDEX idx_detenu (detenu_id),
+    INDEX idx_infraction (infraction_id),
+    INDEX idx_date_jugement (date_jugement),
+    INDEX idx_statut (statut),
+    INDEX idx_lieu (lieu_detention_id),
+    INDEX idx_deleted (is_deleted),
+    INDEX idx_liberation_effective (date_liberation_effective)
+) ENGINE=InnoDB;
+
+-- ============================================================================
+-- 5. HISTORIQUE DES DÉTENTIONS
+-- ============================================================================
+
+CREATE TABLE periodes_detention (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    detenu_id INT UNSIGNED NOT NULL,
+    condamnation_id INT UNSIGNED,
+    
+    type ENUM('DETENTION_PROVISOIRE', 'EXECUTION_PEINE') NOT NULL,
+    motif VARCHAR(255) NOT NULL,
+    
+    date_debut DATE NOT NULL,
+    date_fin DATE,
+    duree_jours INT DEFAULT NULL COMMENT 'Calculé par trigger',
+    
+    lieu_detention_id INT UNSIGNED NOT NULL,
+    observations TEXT,
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_by INT UNSIGNED,
+    
+    FOREIGN KEY (detenu_id) REFERENCES detenus(id) ON DELETE RESTRICT,
+    FOREIGN KEY (condamnation_id) REFERENCES condamnations(id) ON DELETE CASCADE,
+    FOREIGN KEY (lieu_detention_id) REFERENCES lieux_detention(id),
+    FOREIGN KEY (created_by) REFERENCES users(id),
+    
+    INDEX idx_detenu (detenu_id),
+    INDEX idx_condamnation (condamnation_id),
+    INDEX idx_type (type),
+    INDEX idx_dates (date_debut, date_fin)
+) ENGINE=InnoDB;
+
+-- ============================================================================
+-- 6. REMISES DE PEINE
+-- ============================================================================
+
+CREATE TABLE remises_peine (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    condamnation_id INT UNSIGNED NOT NULL,
+    
+    type ENUM('REMISE_GRACIEUSE', 'REDUCTION_BONNE_CONDUITE', 'AMNISTIE', 'AUTRES') NOT NULL,
+    motif TEXT NOT NULL,
+    
+    jours_remis INT NOT NULL,
+    date_decision DATE NOT NULL,
+    reference_decision VARCHAR(255),
+    autorite_decision VARCHAR(255),
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by INT UNSIGNED,
+    
+    FOREIGN KEY (condamnation_id) REFERENCES condamnations(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id),
+    
+    CONSTRAINT chk_jours_positifs CHECK (jours_remis > 0),
+    
+    INDEX idx_condamnation (condamnation_id),
+    INDEX idx_type (type)
+) ENGINE=InnoDB;
+
+-- ============================================================================
+-- 7. GESTION DES DOCUMENTS
+-- ============================================================================
+
+CREATE TABLE documents (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    
+    entity_type ENUM('DETENU', 'CONDAMNATION') NOT NULL,
+    entity_id INT UNSIGNED NOT NULL,
+    
+    type_document VARCHAR(100) NOT NULL,
+    nom_fichier VARCHAR(255) NOT NULL,
+    fichier_path VARCHAR(500) NOT NULL,
+    taille_ko INT,
+    mime_type VARCHAR(100),
+    description TEXT,
+    
+    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    uploaded_by INT UNSIGNED,
+    
+    FOREIGN KEY (uploaded_by) REFERENCES users(id),
+    
+    INDEX idx_entity (entity_type, entity_id),
+    INDEX idx_type (type_document)
+) ENGINE=InnoDB;
+
+-- ============================================================================
+-- 8. NOTIFICATIONS
+-- ============================================================================
+
+CREATE TABLE notifications (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    
+    type ENUM('LIBERATION_IMMINENTE', 'FIN_DETENTION_PROVISOIRE', 'DOCUMENT_MANQUANT', 'AUTRE') NOT NULL,
+    urgence ENUM('INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL') NOT NULL DEFAULT 'INFO',
+    
+    entity_type ENUM('DETENU', 'CONDAMNATION') NOT NULL,
+    entity_id INT UNSIGNED NOT NULL,
+    
+    titre VARCHAR(255) NOT NULL,
+    message TEXT NOT NULL,
+    
+    date_evenement DATE,
+    jours_avant INT,
+    
+    is_read BOOLEAN DEFAULT FALSE,
+    read_at TIMESTAMP NULL,
+    read_by INT UNSIGNED,
+    is_active BOOLEAN DEFAULT TRUE,
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (read_by) REFERENCES users(id),
+    
+    INDEX idx_type (type),
+    INDEX idx_urgence (urgence),
+    INDEX idx_entity (entity_type, entity_id),
+    INDEX idx_read (is_read),
+    INDEX idx_active (is_active)
+) ENGINE=InnoDB;
+
+-- ============================================================================
+-- 9. AUDIT ET TRAÇABILITÉ
+-- ============================================================================
+
+CREATE TABLE audit_logs (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    
+    user_id INT UNSIGNED,
+    username VARCHAR(50),
+    
+    action VARCHAR(50) NOT NULL,
+    entity_type VARCHAR(50),
+    entity_id INT UNSIGNED,
+    
+    old_values JSON,
+    new_values JSON,
+    
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+    
+    INDEX idx_user (user_id),
+    INDEX idx_action (action),
+    INDEX idx_entity (entity_type, entity_id),
+    INDEX idx_date (created_at)
+) ENGINE=InnoDB;
+
+-- ============================================================================
+-- 10. VUES
+-- ============================================================================
+
+-- Vue des détenus complets
+CREATE OR REPLACE VIEW v_detenus_complets AS
+SELECT 
+    d.id,
+    d.matricule,
+    d.nom_complet,
+    d.date_naissance,
+    TIMESTAMPDIFF(YEAR, d.date_naissance, NOW()) AS age,
+    d.sexe,
+    g.libelle AS grade,
+    u.nom AS unite,
+    d.statut_actuel,
+    d.is_multrecidiviste,
+    d.nombre_condamnations,
+    d.telephone,
+    d.photo_path,
+    d.created_at
+FROM detenus d
+INNER JOIN grades g ON d.grade_id = g.id
+INNER JOIN unites u ON d.unite_id = u.id
+WHERE d.is_deleted = FALSE;
+
+-- Vue des condamnations actives
+CREATE OR REPLACE VIEW v_condamnations_actives AS
+SELECT 
+    c.id,
+    c.numero_dossier,
+    d.nom_complet AS detenu,
+    d.matricule,
+    i.libelle AS infraction,
+    c.date_jugement,
+    CONCAT(c.peine_valeur, ' ', c.peine_unite) AS peine,
+    c.date_liberation_effective,
+    DATEDIFF(c.date_liberation_effective, NOW()) AS jours_restants,
+    CASE 
+        WHEN c.date_liberation_effective < NOW() THEN 'LIBERABLE'
+        WHEN DATEDIFF(c.date_liberation_effective, NOW()) <= 1 THEN 'CRITIQUE'
+        WHEN DATEDIFF(c.date_liberation_effective, NOW()) <= 7 THEN 'URGENT'
+        WHEN DATEDIFF(c.date_liberation_effective, NOW()) <= 14 THEN 'ATTENTION'
+        WHEN DATEDIFF(c.date_liberation_effective, NOW()) <= 30 THEN 'A_SUIVRE'
+        ELSE 'NORMAL'
+    END AS statut_alerte,
+    l.nom AS lieu_detention,
+    c.statut
+FROM condamnations c
+INNER JOIN detenus d ON c.detenu_id = d.id
+INNER JOIN infractions i ON c.infraction_id = i.id
+LEFT JOIN lieux_detention l ON c.lieu_detention_id = l.id
+WHERE c.statut = 'EN_COURS' 
+  AND c.is_deleted = FALSE
+  AND d.is_deleted = FALSE;
+
+-- Vue des statistiques
+CREATE OR REPLACE VIEW v_statistiques AS
+SELECT 
+    (SELECT COUNT(*) FROM detenus WHERE is_deleted = FALSE) AS total_detenus,
+    (SELECT COUNT(*) FROM detenus WHERE statut_actuel = 'CONDAMNE' AND is_deleted = FALSE) AS total_condamnes,
+    (SELECT COUNT(*) FROM detenus WHERE statut_actuel = 'DETENTION_PROVISOIRE' AND is_deleted = FALSE) AS total_detention_provisoire,
+    (SELECT COUNT(*) FROM detenus WHERE statut_actuel = 'LIBRE' AND is_deleted = FALSE) AS total_liberes,
+    (SELECT COUNT(*) FROM detenus WHERE is_multrecidiviste = TRUE AND is_deleted = FALSE) AS total_multrecidivistes,
+    (SELECT COUNT(*) FROM condamnations WHERE statut = 'EN_COURS' AND is_deleted = FALSE) AS condamnations_actives;
+
+-- ============================================================================
+-- 11. TRIGGERS
+-- ============================================================================
+
+-- Génération automatique du matricule
+DELIMITER //
+CREATE TRIGGER trg_detenu_before_insert 
+BEFORE INSERT ON detenus
+FOR EACH ROW
+BEGIN
+    IF NEW.matricule IS NULL THEN
+        SET NEW.matricule = CONCAT(
+            'DET',
+            YEAR(CURDATE()),
+            LPAD((SELECT COALESCE(MAX(id), 0) + 1 FROM detenus), 6, '0')
+        );
+    END IF;
+END//
+DELIMITER ;
+
+-- Mise à jour du nombre de condamnations
+DELIMITER //
+CREATE TRIGGER trg_condamnation_after_insert 
+AFTER INSERT ON condamnations
+FOR EACH ROW
+BEGIN
+    UPDATE detenus 
+    SET nombre_condamnations = nombre_condamnations + 1,
+        is_multrecidiviste = (nombre_condamnations + 1 > 1),
+        statut_actuel = 'CONDAMNE'
+    WHERE id = NEW.detenu_id;
+END//
+DELIMITER ;
+
+-- Calcul automatique des dates de libération
+DELIMITER //
+CREATE TRIGGER trg_condamnation_before_update 
+BEFORE UPDATE ON condamnations
+FOR EACH ROW
+BEGIN
+    IF NEW.date_jugement IS NOT NULL AND NEW.peine_valeur > 0 THEN
+        -- Date théorique
+        SET NEW.date_liberation_theorique = DATE_ADD(
+            NEW.date_jugement, 
+            INTERVAL NEW.peine_jours_total DAY
+        );
+        
+        -- Jours OIP
+        SET NEW.jours_detention_provisoire_oip = COALESCE(
+            DATEDIFF(NEW.date_omlp, NEW.date_oip), 0
+        );
+        
+        -- Jours mandat
+        IF NEW.date_mandat_depot IS NOT NULL THEN
+            SET NEW.jours_detention_provisoire_mandat = DATEDIFF(
+                COALESCE(NEW.date_liberation_mandat, NEW.date_jugement),
+                NEW.date_mandat_depot
+            );
+        ELSE
+            SET NEW.jours_detention_provisoire_mandat = 0;
+        END IF;
+        
+        -- Date effective
+        SET NEW.date_liberation_effective = DATE_SUB(
+            NEW.date_liberation_theorique,
+            INTERVAL NEW.jours_detention_provisoire_total DAY
+        );
+    END IF;
+END//
+DELIMITER ;
+
+-- Trigger pour calculer la durée des périodes de détention
+DELIMITER //
+CREATE TRIGGER trg_periode_detention_before_insert
+BEFORE INSERT ON periodes_detention
+FOR EACH ROW
+BEGIN
+    IF NEW.date_fin IS NOT NULL THEN
+        SET NEW.duree_jours = DATEDIFF(NEW.date_fin, NEW.date_debut);
+    END IF;
+END//
+DELIMITER ;
+
+DELIMITER //
+CREATE TRIGGER trg_periode_detention_before_update
+BEFORE UPDATE ON periodes_detention
+FOR EACH ROW
+BEGIN
+    IF NEW.date_fin IS NOT NULL THEN
+        SET NEW.duree_jours = DATEDIFF(NEW.date_fin, NEW.date_debut);
+    ELSE
+        SET NEW.duree_jours = NULL;
+    END IF;
+END//
+DELIMITER ;
+
+-- ============================================================================
+-- 12. PROCÉDURES STOCKÉES
+-- ============================================================================
+
+-- Procédure pour libérer un condamné
+DELIMITER //
+CREATE PROCEDURE sp_liberer_condamne(
+    IN p_condamnation_id INT,
+    IN p_user_id INT,
+    IN p_motif VARCHAR(255)
+)
+BEGIN
+    DECLARE v_detenu_id INT;
+    
+    START TRANSACTION;
+    
+    -- Récupérer l'ID du détenu
+    SELECT detenu_id INTO v_detenu_id
+    FROM condamnations
+    WHERE id = p_condamnation_id;
+    
+    -- Mettre à jour la condamnation
+    UPDATE condamnations
+    SET statut = 'TERMINEE',
+        date_liberation_reelle = NOW(),
+        motif_liberation = p_motif,
+        updated_by = p_user_id
+    WHERE id = p_condamnation_id;
+    
+    -- Mettre à jour le détenu si c'est sa dernière condamnation
+    UPDATE detenus
+    SET statut_actuel = 'LIBRE',
+        date_changement_statut = NOW(),
+        updated_by = p_user_id
+    WHERE id = v_detenu_id
+      AND NOT EXISTS (
+          SELECT 1 FROM condamnations 
+          WHERE detenu_id = v_detenu_id 
+            AND statut = 'EN_COURS'
+            AND id != p_condamnation_id
+      );
+    
+    COMMIT;
+END//
+DELIMITER ;
+
+-- Procédure pour générer les notifications
+DELIMITER //
+CREATE PROCEDURE sp_generer_notifications()
+BEGIN
+    DECLARE v_date_limite DATE;
+    SET v_date_limite = DATE_SUB(NOW(), INTERVAL 30 DAY);
+    
+    -- Supprimer les anciennes notifications
+    DELETE FROM notifications 
+    WHERE created_at < v_date_limite;
+    
+    -- Générer nouvelles notifications
+    INSERT INTO notifications (type, urgence, entity_type, entity_id, titre, message, date_evenement, jours_avant)
+    SELECT 
+        'LIBERATION_IMMINENTE',
+        CASE 
+            WHEN jours_restants <= 1 THEN 'CRITICAL'
+            WHEN jours_restants <= 7 THEN 'HIGH'
+            WHEN jours_restants <= 14 THEN 'MEDIUM'
+            ELSE 'LOW'
+        END,
+        'CONDAMNATION',
+        id,
+        CONCAT('Libération imminente: ', detenu),
+        CONCAT('Date de libération prévue: ', DATE_FORMAT(date_liberation_effective, '%d/%m/%Y')),
+        date_liberation_effective,
+        jours_restants
+    FROM v_condamnations_actives
+    WHERE jours_restants BETWEEN 0 AND 30
+      AND NOT EXISTS (
+          SELECT 1 FROM notifications 
+          WHERE entity_type = 'CONDAMNATION' 
+            AND entity_id = v_condamnations_actives.id
+            AND is_active = TRUE
+            AND DATE(created_at) = DATE(NOW())
+      );
+END//
+DELIMITER ;
+
+-- ============================================================================
+-- FIN DU SCRIPT
+-- ============================================================================
+
+-- Message de confirmation
+SELECT 'Base de données créée avec succès!' AS Message,
+       (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'detenusMilitaires') AS NombreTables;
