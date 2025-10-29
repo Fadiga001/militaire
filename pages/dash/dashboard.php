@@ -4,143 +4,187 @@ if (!isset($_SESSION['user_id'])) {
     header('Location: ../../index.php');
     exit();
 }
+
 require_once '../../includes/db.php';
+require_once '../../includes/classes/autoload.php';
+require_once '../../includes/logs.php';
 
 // Récupère l'utilisateur connecté
-$stmt = $pdo->prepare('SELECT * FROM utilisateurs WHERE id_utilisateur = ?');
+$stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
 $stmt->execute([$_SESSION['user_id']]);
 $user = $stmt->fetch();
-$name = $user ? htmlspecialchars($user['nom']) : '';
-$role = isset($user['role']) ? $user['role'] : '';
+$name = $user ? htmlspecialchars($user['nom'] . ' ' . $user['prenom']) : '';
+$role = $user['role'] ?? '';
+
+// Initialiser les managers
+$detenuMgr = new DetenuManager($pdo);
+$condamnationMgr = new CondamnationManager($pdo);
 
 // ==========================
-// Données Dashboard Paiements
+// STATISTIQUES PRINCIPALES
 // ==========================
 try {
-    // Année académique en cours
-    $anneeStmt = $pdo->prepare("SELECT id_annee, libelle FROM annees_academiques WHERE statut = 'en cours' ORDER BY date_debut DESC LIMIT 1");
-    $anneeStmt->execute();
-    $annee = $anneeStmt->fetch();
-    $currentAnneeId = $annee['id_annee'] ?? null;
-    $currentAnneeLibelle = $annee['libelle'] ?? '';
+    // Statistiques détenus
+    $statsD = $detenuMgr->getStatistiques();
+    $totalDetenus = $statsD['total'] ?? 0;
+    $multrecidivistes = $statsD['multrecidivistes'] ?? 0;
+    $parStatut = $statsD['par_statut'] ?? [];
 
-    // Montant total encaissé (validé = avec reçu)
-    $totalStmt = $pdo->prepare("SELECT COALESCE(SUM(p.montant),0) as total
-        FROM paiements p
-        INNER JOIN recus r ON r.id_paiement = p.id_paiement
-        WHERE (:anneeId IS NULL OR p.id_annee = :anneeId)");
-    $totalStmt->execute([':anneeId' => $currentAnneeId]);
-    $totalEncaisse = (float)($totalStmt->fetch()['total'] ?? 0);
+    $nbCondamnes = $parStatut['CONDAMNE'] ?? 0;
+    $nbDetentionProvisoire = $parStatut['DETENTION_PROVISOIRE'] ?? 0;
+    $nbLibres = $parStatut['LIBRE'] ?? 0;
+    $nbEvades = $parStatut['EVADE'] ?? 0;
 
-    // Paiements validés aujourd'hui
-    $todayStmt = $pdo->prepare("SELECT COUNT(*) as nb
-        FROM recus r
-        INNER JOIN paiements p ON p.id_paiement = r.id_paiement
-        WHERE DATE(r.date_generation) = CURDATE()
-        AND (:anneeId IS NULL OR p.id_annee = :anneeId)");
-    $todayStmt->execute([':anneeId' => $currentAnneeId]);
-    $nbValidesJour = (int)($todayStmt->fetch()['nb'] ?? 0);
+    // Statistiques condamnations
+    $statsC = $condamnationMgr->getStatistiques();
+    $condamnationsActives = $statsC['actives'] ?? 0;
+    $liberationsImminentes = $statsC['liberations_imminentes'] ?? 0;
 
-    // Paiements validés sur le mois en cours
-    $moisStmt = $pdo->prepare("SELECT COUNT(*) as nb
-        FROM recus r
-        INNER JOIN paiements p ON p.id_paiement = r.id_paiement
-        WHERE YEAR(r.date_generation) = YEAR(CURDATE())
-        AND MONTH(r.date_generation) = MONTH(CURDATE())
-        AND (:anneeId IS NULL OR p.id_annee = :anneeId)");
-    $moisStmt->execute([':anneeId' => $currentAnneeId]);
-    $nbValidesMois = (int)($moisStmt->fetch()['nb'] ?? 0);
+    // Libérations critiques (7 jours)
+    $stmt = $pdo->query("
+        SELECT COUNT(*) as nb 
+        FROM condamnations 
+        WHERE statut = 'EN_COURS' 
+        AND DATEDIFF(date_liberation_effective, NOW()) BETWEEN 0 AND 7
+        AND is_deleted = FALSE
+    ");
+    $liberationsCritiques = (int)$stmt->fetch()['nb'];
 
-    // Courbe des paiements mensuels (validés) sur l'année civile courante
-    $monthlyStmt = $pdo->prepare("SELECT DATE_FORMAT(r.date_generation,'%Y-%m') as ym, SUM(p.montant) as total
-        FROM recus r
-        INNER JOIN paiements p ON p.id_paiement = r.id_paiement
-        WHERE YEAR(r.date_generation) = YEAR(CURDATE())
-        AND (:anneeId IS NULL OR p.id_annee = :anneeId)
-        GROUP BY ym
-        ORDER BY ym");
-    $monthlyStmt->execute([':anneeId' => $currentAnneeId]);
-    $monthlyData = $monthlyStmt->fetchAll();
-    $labelsMonthly = [];
-    $dataMonthly = [];
-    foreach ($monthlyData as $row) {
-        $labelsMonthly[] = $row['ym'];
-        $dataMonthly[] = (float)$row['total'];
+    // Détenus par grade (top 5)
+    $parGrade = array_slice($statsD['par_grade'] ?? [], 0, 5);
+
+    // Détenus par unité (top 8)
+    $parUnite = array_slice($statsD['par_unite'] ?? [], 0, 8);
+
+    // Condamnations par infraction (top 10)
+    $parInfraction = $statsC['par_infraction'] ?? [];
+
+    // Évolution mensuelle (6 derniers mois)
+    $stmt = $pdo->query("
+        SELECT DATE_FORMAT(created_at, '%Y-%m') as mois, 
+               COUNT(*) as nb
+        FROM detenus
+        WHERE is_deleted = FALSE
+        AND created_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+        GROUP BY mois
+        ORDER BY mois
+    ");
+    $evolutionMensuelle = $stmt->fetchAll();
+    $labelsMois = [];
+    $dataMois = [];
+    foreach ($evolutionMensuelle as $row) {
+        $labelsMois[] = date('M Y', strtotime($row['mois'] . '-01'));
+        $dataMois[] = (int)$row['nb'];
     }
 
-    // Histogramme par filière (sommes validées par filière)
-    $filiereStmt = $pdo->prepare("SELECT COALESCE(f.nom_filiere,'Inconnue') as filiere, SUM(p.montant) as total
-        FROM recus r
-        INNER JOIN paiements p ON p.id_paiement = r.id_paiement
-        INNER JOIN etudiants e ON e.id_etudiant = p.id_etudiant
-        LEFT JOIN filieres f ON f.id_filiere = e.id_filiere
-        WHERE (:anneeId IS NULL OR p.id_annee = :anneeId)
-        GROUP BY filiere
-        ORDER BY total DESC");
-    $filiereStmt->execute([':anneeId' => $currentAnneeId]);
-    $filiereData = $filiereStmt->fetchAll();
-    $labelsFiliere = [];
-    $dataFiliere = [];
-    foreach ($filiereData as $row) {
-        $labelsFiliere[] = $row['filiere'];
-        $dataFiliere[] = (float)$row['total'];
-    }
+    // Alertes libérations imminentes
+    $alertesLiberations = $condamnationMgr->getAll([
+        'statut' => 'EN_COURS',
+        'alerte' => true,
+        'limit' => 10
+    ]);
 
-    // Alertes: Étudiants ayant payé mais pas validés (pas de reçu)
-    $nonValidesStmt = $pdo->prepare("SELECT p.id_paiement, p.ref_transaction, p.montant, p.date_paiement, e.matricule, e.nom, e.prenom
-        FROM paiements p
-        INNER JOIN etudiants e ON e.id_etudiant = p.id_etudiant
-        LEFT JOIN recus r ON r.id_paiement = p.id_paiement
-        WHERE r.id_recu IS NULL AND (:anneeId IS NULL OR p.id_annee = :anneeId)
-        ORDER BY p.date_paiement DESC
-        LIMIT 10");
-    $nonValidesStmt->execute([':anneeId' => $currentAnneeId]);
-    $alertsNonValides = $nonValidesStmt->fetchAll();
+    // Détenus récents (derniers 5)
+    $detenusRecents = $detenuMgr->getAll(['limit' => 5]);
 
-    // Alertes: Paiements suspects (doublons de référence)
-    $doublonRefStmt = $pdo->prepare("SELECT ref_transaction, COUNT(*) as nb, SUM(montant) as total
-        FROM paiements
-        WHERE (:anneeId IS NULL OR id_annee = :anneeId)
-        GROUP BY ref_transaction
-        HAVING COUNT(*) > 1
-        ORDER BY nb DESC
-        LIMIT 10");
-    $doublonRefStmt->execute([':anneeId' => $currentAnneeId]);
-    $alertsDoublonsRef = $doublonRefStmt->fetchAll();
-
-    // Alertes: même étudiant, même montant, même jour (hors reçu)
-    $doublonEtudStmt = $pdo->prepare("SELECT id_etudiant, DATE(date_paiement) as jour, montant, COUNT(*) as nb
-        FROM paiements
-        WHERE (:anneeId IS NULL OR id_annee = :anneeId)
-        GROUP BY id_etudiant, jour, montant
-        HAVING COUNT(*) > 1
-        ORDER BY nb DESC
-        LIMIT 10");
-    $doublonEtudStmt->execute([':anneeId' => $currentAnneeId]);
-    $alertsDoublonsEtud = $doublonEtudStmt->fetchAll();
+    // Distribution par catégorie d'infraction
+    $stmt = $pdo->query("
+        SELECT i.categorie, COUNT(*) as nb
+        FROM condamnations c
+        JOIN infractions i ON c.infraction_id = i.id
+        WHERE c.statut = 'EN_COURS' AND c.is_deleted = FALSE
+        GROUP BY i.categorie
+    ");
+    $parCategorie = $stmt->fetchAll();
 } catch (Exception $ex) {
-    // En cas d'erreur SQL, on sécurise des valeurs par défaut
-    $totalEncaisse = 0;
-    $nbValidesJour = 0;
-    $nbValidesMois = 0;
-    $labelsMonthly = [];
-    $dataMonthly = [];
-    $labelsFiliere = [];
-    $dataFiliere = [];
-    $alertsNonValides = [];
-    $alertsDoublonsRef = [];
-    $alertsDoublonsEtud = [];
+    error_log("Erreur dashboard: " . $ex->getMessage());
+    $totalDetenus = 0;
+    $nbCondamnes = 0;
+    $nbDetentionProvisoire = 0;
+    $multrecidivistes = 0;
+    $liberationsImminentes = 0;
+    $liberationsCritiques = 0;
+    $parGrade = [];
+    $parUnite = [];
+    $parInfraction = [];
+    $labelsMois = [];
+    $dataMois = [];
+    $alertesLiberations = [];
+    $detenusRecents = [];
+    $parCategorie = [];
 }
-
 ?>
 <!DOCTYPE html>
 <html lang="fr">
 
 <head>
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-    <title>Dashboard - eReçu Agitel</title>
+    <title>Dashboard - Gestion des Détenus Militaires</title>
     <meta content="width=device-width, initial-scale=1.0, shrink-to-fit=no" name="viewport" />
     <?php include '../../requires/link.php'; ?>
+    <style>
+    .card-stats {
+        transition: transform 0.3s, box-shadow 0.3s;
+    }
+
+    .card-stats:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+    }
+
+    .icon-big {
+        width: 60px;
+        height: 60px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 15px;
+    }
+
+    .bubble-shadow-small {
+        box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+    }
+
+    .badge-alerte {
+        font-size: 11px;
+        padding: 4px 8px;
+    }
+
+    .alerte-CRITIQUE {
+        background: #dc3545;
+    }
+
+    .alerte-URGENT {
+        background: #fd7e14;
+    }
+
+    .alerte-ATTENTION {
+        background: #ffc107;
+    }
+
+    .alerte-A_SUIVRE {
+        background: #17a2b8;
+    }
+
+    .alerte-NORMAL {
+        background: #28a745;
+    }
+
+    .alerte-LIBERABLE {
+        background: #6c757d;
+    }
+
+    .stat-number {
+        font-size: 2.5rem;
+        font-weight: 700;
+        line-height: 1;
+    }
+
+    .progress-thin {
+        height: 8px;
+        border-radius: 10px;
+    }
+    </style>
 </head>
 
 <body>
@@ -150,268 +194,418 @@ try {
             <?php include '../../requires/main-header.php'; ?>
             <div class="container">
                 <div class="page-inner">
+                    <!-- Header -->
                     <div class="d-flex align-items-left align-items-md-center flex-column flex-md-row pt-2 pb-4">
                         <div>
-                            <h3 class="fw-bold mb-3">Dashboard</h3>
-                            <h6 class="op-7 mb-2">Bienvenue, <?= $name; ?></h6>
+                            <h3 class="fw-bold mb-3">
+                                <i class="fas fa-tachometer-alt me-2"></i>Tableau de Bord
+                            </h3>
+                            <h6 class="op-7 mb-2">
+                                <i class="fas fa-user-shield me-2"></i>Bienvenue, <?= $name ?>
+                            </h6>
+                        </div>
+                        <div class="ms-md-auto py-2 py-md-0">
+                            <button class="btn btn-primary btn-round" onclick="window.location.reload()">
+                                <i class="fas fa-sync-alt me-2"></i>Actualiser
+                            </button>
                         </div>
                     </div>
+
+                    <!-- Statistiques principales -->
+                    <div class="row g-4 mb-4">
+                        <div class="col-sm-6 col-md-3">
+                            <div class="card card-stats card-round">
+                                <div class="card-body">
+                                    <div class="row align-items-center">
+                                        <div class="col-icon">
+                                            <div class="icon-big text-center icon-primary bubble-shadow-small">
+                                                <i class="fas fa-users"></i>
+                                            </div>
+                                        </div>
+                                        <div class="col col-stats ms-3 ms-sm-0">
+                                            <div class="numbers">
+                                                <p class="card-category">Total Détenus</p>
+                                                <h4 class="card-title"><?= number_format($totalDetenus) ?></h4>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-sm-6 col-md-3">
+                            <div class="card card-stats card-round">
+                                <div class="card-body">
+                                    <div class="row align-items-center">
+                                        <div class="col-icon">
+                                            <div class="icon-big text-center icon-success bubble-shadow-small">
+                                                <i class="fas fa-gavel"></i>
+                                            </div>
+                                        </div>
+                                        <div class="col col-stats ms-3 ms-sm-0">
+                                            <div class="numbers">
+                                                <p class="card-category">Condamnés</p>
+                                                <h4 class="card-title"><?= number_format($nbCondamnes) ?></h4>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-sm-6 col-md-3">
+                            <div class="card card-stats card-round">
+                                <div class="card-body">
+                                    <div class="row align-items-center">
+                                        <div class="col-icon">
+                                            <div class="icon-big text-center icon-warning bubble-shadow-small">
+                                                <i class="fas fa-clock"></i>
+                                            </div>
+                                        </div>
+                                        <div class="col col-stats ms-3 ms-sm-0">
+                                            <div class="numbers">
+                                                <p class="card-category">Détention Provisoire</p>
+                                                <h4 class="card-title"><?= number_format($nbDetentionProvisoire) ?></h4>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-sm-6 col-md-3">
+                            <div class="card card-stats card-round">
+                                <div class="card-body">
+                                    <div class="row align-items-center">
+                                        <div class="col-icon">
+                                            <div class="icon-big text-center icon-danger bubble-shadow-small">
+                                                <i class="fas fa-exclamation-triangle"></i>
+                                            </div>
+                                        </div>
+                                        <div class="col col-stats ms-3 ms-sm-0">
+                                            <div class="numbers">
+                                                <p class="card-category">Libérations Critiques</p>
+                                                <h4 class="card-title"><?= number_format($liberationsCritiques) ?></h4>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Alertes & Graphiques -->
+                    <div class="row g-4 mb-4">
+                        <!-- Alertes Libérations -->
+                        <div class="col-md-6">
+                            <div class="card card-round h-100">
+                                <div class="card-header">
+                                    <div class="card-head-row">
+                                        <div class="card-title">
+                                            <i class="fas fa-bell text-danger me-2"></i>
+                                            Libérations Imminentes (30 jours)
+                                        </div>
+                                        <div class="card-tools">
+                                            <span class="badge badge-danger"><?= count($alertesLiberations) ?></span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <?php if (empty($alertesLiberations)): ?>
+                                    <div class="text-center text-muted py-4">
+                                        <i class="fas fa-check-circle fa-3x mb-3"></i>
+                                        <p>Aucune libération imminente</p>
+                                    </div>
+                                    <?php else: ?>
+                                    <div class="table-responsive">
+                                        <table class="table table-hover table-sm">
+                                            <thead>
+                                                <tr>
+                                                    <th>Détenu</th>
+                                                    <th>Date</th>
+                                                    <th>Jours</th>
+                                                    <th>Alerte</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <?php foreach ($alertesLiberations as $alert): ?>
+                                                <tr>
+                                                    <td>
+                                                        <strong><?= htmlspecialchars($alert['detenu']) ?></strong><br>
+                                                        <small
+                                                            class="text-muted"><?= htmlspecialchars($alert['matricule']) ?></small>
+                                                    </td>
+                                                    <td><?= date('d/m/Y', strtotime($alert['date_liberation_effective'])) ?>
+                                                    </td>
+                                                    <td>
+                                                        <strong><?= max(0, (int)$alert['jours_restants']) ?></strong>
+                                                    </td>
+                                                    <td>
+                                                        <span
+                                                            class="badge badge-alerte alerte-<?= $alert['alerte_niveau'] ?>">
+                                                            <?= $alert['alerte_niveau'] ?>
+                                                        </span>
+                                                    </td>
+                                                </tr>
+                                                <?php endforeach; ?>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    <?php endif; ?>
+                                </div>
+                                <div class="card-footer">
+                                    <a href="../condamnations/condamnations.php" class="btn btn-primary btn-sm">
+                                        <i class="fas fa-list me-2"></i>Voir toutes les condamnations
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Détenus récents -->
+                        <div class="col-md-6">
+                            <div class="card card-round h-100">
+                                <div class="card-header">
+                                    <div class="card-head-row">
+                                        <div class="card-title">
+                                            <i class="fas fa-user-plus text-primary me-2"></i>
+                                            Détenus Récents
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <div class="table-responsive">
+                                        <table class="table table-hover table-sm">
+                                            <thead>
+                                                <tr>
+                                                    <th>Matricule</th>
+                                                    <th>Nom</th>
+                                                    <th>Grade</th>
+                                                    <th>Statut</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <?php foreach ($detenusRecents as $det): ?>
+                                                <tr>
+                                                    <td><?= htmlspecialchars($det['matricule']) ?></td>
+                                                    <td>
+                                                        <strong><?= htmlspecialchars($det['nom_complet']) ?></strong>
+                                                    </td>
+                                                    <td>
+                                                        <span class="badge badge-info">
+                                                            <?= htmlspecialchars($det['grade_code']) ?>
+                                                        </span>
+                                                    </td>
+                                                    <td>
+                                                        <?php
+                                                            $statutColor = [
+                                                                'CONDAMNE' => 'danger',
+                                                                'DETENTION_PROVISOIRE' => 'warning',
+                                                                'LIBRE' => 'success',
+                                                                'EVADE' => 'dark'
+                                                            ];
+                                                            $color = $statutColor[$det['statut_actuel']] ?? 'secondary';
+                                                            ?>
+                                                        <span class="badge badge-<?= $color ?>">
+                                                            <?= $det['statut_actuel'] ?>
+                                                        </span>
+                                                    </td>
+                                                </tr>
+                                                <?php endforeach; ?>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                                <div class="card-footer">
+                                    <a href="../detenus/detenus.php" class="btn btn-primary btn-sm">
+                                        <i class="fas fa-list me-2"></i>Voir tous les détenus
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Graphiques -->
+                    <div class="row g-4 mb-4">
+                        <!-- Évolution mensuelle -->
+                        <div class="col-lg-8">
+                            <div class="card card-round">
+                                <div class="card-header">
+                                    <div class="card-title">
+                                        <i class="fas fa-chart-line me-2"></i>
+                                        Évolution des Détenus (6 derniers mois)
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <canvas id="evolutionChart" height="100"></canvas>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Répartition par catégorie -->
+                        <div class="col-lg-4">
+                            <div class="card card-round">
+                                <div class="card-header">
+                                    <div class="card-title">
+                                        <i class="fas fa-chart-pie me-2"></i>
+                                        Par Catégorie d'Infraction
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <canvas id="categorieChart" height="180"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Statistiques détaillées -->
                     <div class="row g-4">
-                        <?php if ($role === 'admin' || $role === 'super_admin'): ?>
-                            <div class="col-sm-6 col-md-3">
-                                <div class="card card-stats card-round">
-                                    <div class="card-body">
-                                        <div class="row align-items-center">
-                                            <div class="col-icon">
-                                                <div class="icon-big text-center icon-success bubble-shadow-small"
-                                                    title="Total encaissé">
-                                                    <i class="fas fa-coins"></i>
-                                                </div>
-                                            </div>
-                                            <div class="col col-stats ms-3 ms-sm-0">
-                                                <div class="numbers">
-                                                    <p class="card-category">Total encaissé
-                                                        <?= $currentAnneeLibelle ? '(' . htmlspecialchars($currentAnneeLibelle) . ')' : '' ?>
-                                                    </p>
-                                                    <h4 class="card-title"><?= number_format($totalEncaisse, 0, ',', ' ') ?>
-                                                        FCFA</h4>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="col-sm-6 col-md-3">
-                                <div class="card card-stats card-round">
-                                    <div class="card-body">
-                                        <div class="row align-items-center">
-                                            <div class="col-icon">
-                                                <div class="icon-big text-center icon-primary bubble-shadow-small"
-                                                    title="Validés aujourd'hui">
-                                                    <i class="fas fa-calendar-day"></i>
-                                                </div>
-                                            </div>
-                                            <div class="col col-stats ms-3 ms-sm-0">
-                                                <div class="numbers">
-                                                    <p class="card-category">Validés aujourd'hui</p>
-                                                    <h4 class="card-title"><?= number_format($nbValidesJour) ?></h4>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="col-sm-6 col-md-3">
-                                <div class="card card-stats card-round">
-                                    <div class="card-body">
-                                        <div class="row align-items-center">
-                                            <div class="col-icon">
-                                                <div class="icon-big text-center icon-info bubble-shadow-small"
-                                                    title="Validés ce mois">
-                                                    <i class="fas fa-calendar-alt"></i>
-                                                </div>
-                                            </div>
-                                            <div class="col col-stats ms-3 ms-sm-0">
-                                                <div class="numbers">
-                                                    <p class="card-category">Validés ce mois</p>
-                                                    <h4 class="card-title"><?= number_format($nbValidesMois) ?></h4>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        <?php endif; ?>
-
-                        <!-- Graphiques -->
-                        <div class="col-12 col-lg-8">
-                            <div class="card">
+                        <!-- Par Grade -->
+                        <div class="col-md-6">
+                            <div class="card card-round">
                                 <div class="card-header">
-                                    <div class="card-title">Courbe des paiements (mensuel)</div>
+                                    <div class="card-title">
+                                        <i class="fas fa-star me-2"></i>
+                                        Répartition par Grade (Top 5)
+                                    </div>
                                 </div>
                                 <div class="card-body">
-                                    <canvas id="paiementsMensuelsChart" height="120"></canvas>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="col-12 col-lg-4">
-                            <div class="card">
-                                <div class="card-header">
-                                    <div class="card-title">Répartition par filière</div>
-                                </div>
-                                <div class="card-body">
-                                    <canvas id="filiereChart" height="260"></canvas>
+                                    <?php foreach ($parGrade as $grade): ?>
+                                    <div class="mb-3">
+                                        <div class="d-flex justify-content-between mb-1">
+                                            <span><?= htmlspecialchars($grade['libelle']) ?></span>
+                                            <strong><?= (int)$grade['nb'] ?></strong>
+                                        </div>
+                                        <div class="progress progress-thin">
+                                            <?php
+                                                $percent = $totalDetenus > 0 ? ($grade['nb'] / $totalDetenus * 100) : 0;
+                                                ?>
+                                            <div class="progress-bar bg-primary" style="width: <?= $percent ?>%"></div>
+                                        </div>
+                                    </div>
+                                    <?php endforeach; ?>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- Alertes -->
-                        <div class="col-12 col-lg-6">
-                            <div class="card">
-                                <div class="card-header d-flex justify-content-between align-items-center">
-                                    <div class="card-title mb-0">Alertes: Payés non validés</div>
-                                </div>
-                                <div class="card-body">
-                                    <?php if (empty($alertsNonValides)): ?>
-                                        <p class="text-muted mb-0">Aucune alerte.</p>
-                                    <?php else: ?>
-                                        <div class="table-responsive">
-                                            <table class="table table-sm">
-                                                <thead>
-                                                    <tr>
-                                                        <th>Matricule</th>
-                                                        <th>Nom</th>
-                                                        <th>Réf</th>
-                                                        <th>Montant</th>
-                                                        <th>Date</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    <?php foreach ($alertsNonValides as $a): ?>
-                                                        <tr>
-                                                            <td><?= htmlspecialchars($a['matricule']) ?></td>
-                                                            <td><?= htmlspecialchars($a['nom'] . ' ' . $a['prenom']) ?></td>
-                                                            <td><?= htmlspecialchars($a['ref_transaction']) ?></td>
-                                                            <td><?= number_format((float)$a['montant'], 0, ',', ' ') ?></td>
-                                                            <td><?= htmlspecialchars($a['date_paiement']) ?></td>
-                                                        </tr>
-                                                    <?php endforeach; ?>
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    <?php endif; ?>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="col-12 col-lg-6">
-                            <div class="card">
+                        <!-- Par Infraction -->
+                        <div class="col-md-6">
+                            <div class="card card-round">
                                 <div class="card-header">
-                                    <div class="card-title">Alertes: Paiements suspects</div>
+                                    <div class="card-title">
+                                        <i class="fas fa-balance-scale me-2"></i>
+                                        Infractions Courantes (Top 5)
+                                    </div>
                                 </div>
                                 <div class="card-body">
-                                    <h6 class="mb-2">Doublons de référence</h6>
-                                    <?php if (empty($alertsDoublonsRef)): ?>
-                                        <p class="text-muted">Aucun doublon de référence.</p>
-                                    <?php else: ?>
-                                        <ul class="list-group mb-3">
-                                            <?php foreach ($alertsDoublonsRef as $d): ?>
-                                                <li class="list-group-item d-flex justify-content-between align-items-center">
-                                                    <span>Réf <?= htmlspecialchars($d['ref_transaction']) ?>
-                                                        (x<?= (int)$d['nb'] ?>)</span>
-                                                    <span><?= number_format((float)$d['total'], 0, ',', ' ') ?> FCFA</span>
-                                                </li>
-                                            <?php endforeach; ?>
-                                        </ul>
-                                    <?php endif; ?>
-
-                                    <h6 class="mb-2">Même étudiant / montant / jour</h6>
-                                    <?php if (empty($alertsDoublonsEtud)): ?>
-                                        <p class="text-muted mb-0">Aucun cluster suspect.</p>
-                                    <?php else: ?>
-                                        <div class="table-responsive">
-                                            <table class="table table-sm">
-                                                <thead>
-                                                    <tr>
-                                                        <th>ID Étudiant</th>
-                                                        <th>Jour</th>
-                                                        <th>Montant</th>
-                                                        <th>Occurrences</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    <?php foreach ($alertsDoublonsEtud as $d): ?>
-                                                        <tr>
-                                                            <td><?= (int)$d['id_etudiant'] ?></td>
-                                                            <td><?= htmlspecialchars($d['jour']) ?></td>
-                                                            <td><?= number_format((float)$d['montant'], 0, ',', ' ') ?></td>
-                                                            <td><?= (int)$d['nb'] ?></td>
-                                                        </tr>
-                                                    <?php endforeach; ?>
-                                                </tbody>
-                                            </table>
+                                    <?php
+                                    $topInfractions = array_slice($parInfraction, 0, 5);
+                                    $maxInfraction = !empty($topInfractions) ? max(array_column($topInfractions, 'nb')) : 1;
+                                    foreach ($topInfractions as $inf):
+                                    ?>
+                                    <div class="mb-3">
+                                        <div class="d-flex justify-content-between mb-1">
+                                            <span><?= htmlspecialchars($inf['libelle']) ?></span>
+                                            <strong><?= (int)$inf['nb'] ?></strong>
                                         </div>
-                                    <?php endif; ?>
+                                        <div class="progress progress-thin">
+                                            <?php
+                                                $percent = ($inf['nb'] / $maxInfraction * 100);
+                                                ?>
+                                            <div class="progress-bar bg-danger" style="width: <?= $percent ?>%"></div>
+                                        </div>
+                                    </div>
+                                    <?php endforeach; ?>
                                 </div>
                             </div>
                         </div>
                     </div>
-
                 </div>
             </div>
         </div>
     </div>
 
-    <!--   Core JS Files   -->
+    <!-- Scripts -->
     <script src="../../assets/js/core/jquery-3.7.1.min.js"></script>
     <script src="../../assets/js/core/popper.min.js"></script>
     <script src="../../assets/js/core/bootstrap.min.js"></script>
     <script src="../../assets/js/plugin/chart.js/chart.min.js"></script>
     <script src="../../assets/js/kaiadmin.min.js"></script>
-    <script>
-        // Courbe paiements mensuels
-        (function() {
-            var el = document.getElementById('paiementsMensuelsChart');
-            if (el) {
-                new Chart(el.getContext('2d'), {
-                    type: 'line',
-                    data: {
-                        labels: <?= json_encode($labelsMonthly ?? []) ?>,
-                        datasets: [{
-                            label: 'Montant validé (FCFA)',
-                            data: <?= json_encode($dataMonthly ?? []) ?>,
-                            borderColor: '#177dff',
-                            backgroundColor: 'rgba(23,125,255,0.1)',
-                            tension: 0.25,
-                            fill: true
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        plugins: {
-                            legend: {
-                                display: false
-                            }
-                        },
-                        scales: {
-                            y: {
-                                beginAtZero: true
-                            }
-                        }
-                    }
-                });
-            }
-        })();
 
-        // Histogramme par filière
-        (function() {
-            var el = document.getElementById('filiereChart');
-            if (el) {
-                new Chart(el.getContext('2d'), {
-                    type: 'bar',
-                    data: {
-                        labels: <?= json_encode($labelsFiliere ?? []) ?>,
-                        datasets: [{
-                            label: 'Montant (FCFA)',
-                            data: <?= json_encode($dataFiliere ?? []) ?>,
-                            backgroundColor: '#4caf50'
-                        }]
+    <script>
+    // Graphique évolution mensuelle
+    (function() {
+        var ctx = document.getElementById('evolutionChart');
+        if (ctx) {
+            new Chart(ctx.getContext('2d'), {
+                type: 'line',
+                data: {
+                    labels: <?= json_encode($labelsMois) ?>,
+                    datasets: [{
+                        label: 'Nouveaux détenus',
+                        data: <?= json_encode($dataMois) ?>,
+                        borderColor: '#177dff',
+                        backgroundColor: 'rgba(23, 125, 255, 0.2)',
+                        borderWidth: 3,
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 5,
+                        pointHoverRadius: 7
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
                     },
-                    options: {
-                        responsive: true,
-                        plugins: {
-                            legend: {
-                                display: false
-                            }
-                        },
-                        scales: {
-                            y: {
-                                beginAtZero: true
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+    })();
+
+    // Graphique par catégorie
+    (function() {
+        var ctx = document.getElementById('categorieChart');
+        if (ctx) {
+            var labels = <?= json_encode(array_column($parCategorie, 'categorie')) ?>;
+            var data = <?= json_encode(array_column($parCategorie, 'nb')) ?>;
+
+            new Chart(ctx.getContext('2d'), {
+                type: 'doughnut',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: data,
+                        backgroundColor: ['#dc3545', '#fd7e14', '#ffc107'],
+                        borderWidth: 2,
+                        borderColor: '#fff'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                padding: 15,
+                                font: {
+                                    size: 12
+                                }
                             }
                         }
                     }
-                });
-            }
-        })();
+                }
+            });
+        }
+    })();
     </script>
 </body>
 
