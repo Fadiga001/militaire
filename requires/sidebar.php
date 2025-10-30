@@ -3,7 +3,6 @@
 $currentPage = basename($_SERVER['PHP_SELF']);
 $currentDir = basename(dirname($_SERVER['PHP_SELF']));
 
-// Fonction pour déterminer si un menu est actif
 function isActive($page, $dir = null)
 {
     global $currentPage, $currentDir;
@@ -13,7 +12,6 @@ function isActive($page, $dir = null)
     return ($currentPage === $page) ? 'active' : '';
 }
 
-// Fonction pour déterminer si un submenu doit être ouvert
 function isSubmenuOpen($dir)
 {
     global $currentDir;
@@ -36,16 +34,14 @@ function isSubmenuOpen($dir)
                     <i class="fas fa-angle-double-left"></i>
                 </button>
             </div>
-            <button class="topbar-toggler more">
-                <i class="fas fa-ellipsis-v"></i>
-            </button>
         </div>
     </div>
 
     <div class="sidebar-wrapper scrollbar scrollbar-inner">
         <div class="sidebar-content">
             <ul class="nav nav-secondary">
-                <!-- Dashboard -->
+
+                <!-- DASHBOARD -->
                 <li class="nav-item <?= isActive('dashboard.php') ?>">
                     <a href="../../pages/dash/dashboard.php">
                         <i class="fas fa-tachometer-alt"></i>
@@ -53,10 +49,9 @@ function isSubmenuOpen($dir)
                     </a>
                 </li>
 
+                <!-- SECTION: GESTION PRINCIPALE -->
                 <li class="nav-section">
-                    <span class="sidebar-mini-icon">
-                        <i class="fas fa-ellipsis-h"></i>
-                    </span>
+                    <span class="sidebar-mini-icon"><i class="fas fa-ellipsis-h"></i></span>
                     <h4 class="text-section">Gestion Principale</h4>
                 </li>
 
@@ -108,10 +103,9 @@ function isSubmenuOpen($dir)
                     </div>
                 </li>
 
+                <!-- SECTION: DONNÉES DE RÉFÉRENCE -->
                 <li class="nav-section">
-                    <span class="sidebar-mini-icon">
-                        <i class="fas fa-ellipsis-h"></i>
-                    </span>
+                    <span class="sidebar-mini-icon"><i class="fas fa-ellipsis-h"></i></span>
                     <h4 class="text-section">Données de Référence</h4>
                 </li>
 
@@ -140,22 +134,22 @@ function isSubmenuOpen($dir)
                 </li>
 
                 <!-- Lieux de Détention -->
-                <li class="nav-item <?= isActive(null, 'lieux-detention') ?>">
+                <li class="nav-item <?= isActive(null, 'lieux_detention') ?>">
                     <a data-bs-toggle="collapse" href="#lieux" class="collapsed"
-                        aria-expanded="<?= isSubmenuOpen('lieux-detention') ? 'true' : 'false' ?>">
+                        aria-expanded="<?= isSubmenuOpen('lieux_detention') ? 'true' : 'false' ?>">
                         <i class="fas fa-map-marker-alt"></i>
                         <p>Lieux de Détention</p>
                         <span class="caret"></span>
                     </a>
-                    <div class="collapse <?= isSubmenuOpen('lieux-detention') ?>" id="lieux">
+                    <div class="collapse <?= isSubmenuOpen('lieux_detention') ?>" id="lieux">
                         <ul class="nav nav-collapse">
-                            <li class="<?= isActive('lieux_detention.php', 'lieux-detention') ?>">
-                                <a href="../../pages/lieux-detention/lieux_detention.php">
+                            <li class="<?= isActive('lieux_detention.php', 'lieux_detention') ?>">
+                                <a href="../../pages/lieux_detention/lieux_detention.php">
                                     <span class="sub-item">Liste des Lieux</span>
                                 </a>
                             </li>
-                            <li class="<?= isActive('ajouter_lieu.php', 'lieux-detention') ?>">
-                                <a href="../../pages/lieux-detention/ajouter_lieu.php">
+                            <li class="<?= isActive('ajouter_lieu.php', 'lieux_detention') ?>">
+                                <a href="../../pages/lieux_detention/ajouter_lieu.php">
                                     <span class="sub-item">Ajouter un Lieu</span>
                                 </a>
                             </li>
@@ -163,64 +157,10 @@ function isSubmenuOpen($dir)
                     </div>
                 </li>
 
-                <!-- Grades & Unités -->
-                <li class="nav-item <?= isActive(null, 'references') ?>">
-                    <a data-bs-toggle="collapse" href="#references" class="collapsed"
-                        aria-expanded="<?= isSubmenuOpen('references') ? 'true' : 'false' ?>">
-                        <i class="fas fa-star"></i>
-                        <p>Grades & Unités</p>
-                        <span class="caret"></span>
-                    </a>
-                    <div class="collapse <?= isSubmenuOpen('references') ?>" id="references">
-                        <ul class="nav nav-collapse">
-                            <li class="<?= isActive('grades.php', 'references') ?>">
-                                <a href="../../pages/references/grades.php">
-                                    <span class="sub-item">Grades Militaires</span>
-                                </a>
-                            </li>
-                            <li class="<?= isActive('unites.php', 'references') ?>">
-                                <a href="../../pages/references/unites.php">
-                                    <span class="sub-item">Unités Militaires</span>
-                                </a>
-                            </li>
-                        </ul>
-                    </div>
-                </li>
-
+                <!-- SECTION: RAPPORTS -->
                 <li class="nav-section">
-                    <span class="sidebar-mini-icon">
-                        <i class="fas fa-ellipsis-h"></i>
-                    </span>
+                    <span class="sidebar-mini-icon"><i class="fas fa-ellipsis-h"></i></span>
                     <h4 class="text-section">Rapports & Statistiques</h4>
-                </li>
-
-                <!-- Rapports -->
-                <li class="nav-item <?= isActive(null, 'rapports') ?>">
-                    <a data-bs-toggle="collapse" href="#rapports" class="collapsed"
-                        aria-expanded="<?= isSubmenuOpen('rapports') ? 'true' : 'false' ?>">
-                        <i class="fas fa-chart-bar"></i>
-                        <p>Rapports</p>
-                        <span class="caret"></span>
-                    </a>
-                    <div class="collapse <?= isSubmenuOpen('rapports') ?>" id="rapports">
-                        <ul class="nav nav-collapse">
-                            <li class="<?= isActive('rapport_general.php', 'rapports') ?>">
-                                <a href="../../pages/rapports/rapport_general.php">
-                                    <span class="sub-item">Rapport Général</span>
-                                </a>
-                            </li>
-                            <li class="<?= isActive('rapport_liberations.php', 'rapports') ?>">
-                                <a href="../../pages/rapports/rapport_liberations.php">
-                                    <span class="sub-item">Libérations Prévues</span>
-                                </a>
-                            </li>
-                            <li class="<?= isActive('rapport_statistiques.php', 'rapports') ?>">
-                                <a href="../../pages/rapports/rapport_statistiques.php">
-                                    <span class="sub-item">Statistiques Détaillées</span>
-                                </a>
-                            </li>
-                        </ul>
-                    </div>
                 </li>
 
                 <!-- Notifications -->
@@ -229,7 +169,6 @@ function isSubmenuOpen($dir)
                         <i class="fas fa-bell"></i>
                         <p>Notifications</p>
                         <?php
-                        // Compter les notifications non lues
                         try {
                             $notifStmt = $pdo->query("
                                 SELECT COUNT(*) as nb 
@@ -243,17 +182,15 @@ function isSubmenuOpen($dir)
                         <?php
                             endif;
                         } catch (Exception $e) {
-                            // Ignorer les erreurs
                         }
                         ?>
                     </a>
                 </li>
 
+                <!-- SECTION: ADMINISTRATION (ADMIN UNIQUEMENT) -->
                 <?php if ($_SESSION['user_role'] === 'ADMIN'): ?>
                     <li class="nav-section">
-                        <span class="sidebar-mini-icon">
-                            <i class="fas fa-ellipsis-h"></i>
-                        </span>
+                        <span class="sidebar-mini-icon"><i class="fas fa-ellipsis-h"></i></span>
                         <h4 class="text-section">Administration</h4>
                     </li>
 
@@ -263,6 +200,23 @@ function isSubmenuOpen($dir)
                             aria-expanded="<?= isSubmenuOpen('utilisateurs') ? 'true' : 'false' ?>">
                             <i class="fas fa-user-shield"></i>
                             <p>Utilisateurs</p>
+                            <?php
+                            // Badge: utilisateurs verrouillés
+                            try {
+                                $lockStmt = $pdo->query("
+                                SELECT COUNT(*) as nb 
+                                FROM users 
+                                WHERE locked_until IS NOT NULL AND locked_until > NOW()
+                            ");
+                                $nbLocked = (int)$lockStmt->fetch()['nb'];
+                                if ($nbLocked > 0):
+                            ?>
+                                    <span class="badge badge-warning"><?= $nbLocked ?></span>
+                            <?php
+                                endif;
+                            } catch (Exception $e) {
+                            }
+                            ?>
                             <span class="caret"></span>
                         </a>
                         <div class="collapse <?= isSubmenuOpen('utilisateurs') ?>" id="utilisateurs">
@@ -280,41 +234,24 @@ function isSubmenuOpen($dir)
                             </ul>
                         </div>
                     </li>
-
-                    <!-- Logs d'Audit -->
-                    <li class="nav-item <?= isActive('logs.php', 'logs') ?>">
-                        <a href="../../pages/logs/logs.php">
-                            <i class="fas fa-history"></i>
-                            <p>Logs d'Audit</p>
-                        </a>
-                    </li>
-
-                    <!-- Paramètres -->
-                    <li class="nav-item <?= isActive('parametres.php', 'parametres') ?>">
-                        <a href="../../pages/parametres/parametres.php">
-                            <i class="fas fa-cog"></i>
-                            <p>Paramètres</p>
-                        </a>
-                    </li>
                 <?php endif; ?>
 
+                <!-- SECTION: COMPTE PERSONNEL (TOUS) -->
                 <li class="nav-section">
-                    <span class="sidebar-mini-icon">
-                        <i class="fas fa-ellipsis-h"></i>
-                    </span>
-                    <h4 class="text-section">Système</h4>
+                    <span class="sidebar-mini-icon"><i class="fas fa-ellipsis-h"></i></span>
+                    <h4 class="text-section">Mon Compte</h4>
                 </li>
 
-                <!-- Aide -->
-                <li class="nav-item <?= isActive('aide.php', 'aide') ?>">
-                    <a href="../../pages/aide/aide.php">
-                        <i class="fas fa-question-circle"></i>
-                        <p>Aide & Documentation</p>
+                <!-- Mon Profil (disponible pour tous) -->
+                <li class="nav-item <?= isActive('mon_profil.php', 'utilisateurs') ?>">
+                    <a href="../../pages/utilisateurs/mon_profil.php">
+                        <i class="fas fa-user-circle"></i>
+                        <p>Mon Profil</p>
                     </a>
                 </li>
 
                 <!-- Déconnexion -->
-                <li class="nav-item <?= isActive('logout.php', 'dash') ?>">
+                <li class="nav-item">
                     <a href="../../pages/dash/logout.php"
                         onclick="return confirm('Êtes-vous sûr de vouloir vous déconnecter ?')">
                         <i class="fas fa-sign-out-alt text-danger"></i>
@@ -328,7 +265,6 @@ function isSubmenuOpen($dir)
 <!-- End Sidebar -->
 
 <style>
-    /* Personnalisation sidebar militaire */
     .sidebar[data-background-color="dark"] {
         background: linear-gradient(180deg, #1a1f33 0%, #0d1117 100%);
     }
@@ -356,11 +292,6 @@ function isSubmenuOpen($dir)
         background: rgba(255, 255, 255, 0.05);
     }
 
-    .sidebar .nav .nav-collapse .nav-item a:hover {
-        background: rgba(23, 125, 255, 0.1);
-        padding-left: 65px;
-    }
-
     .sidebar .nav .nav-item a .badge {
         position: absolute;
         right: 20px;
@@ -368,7 +299,6 @@ function isSubmenuOpen($dir)
         transform: translateY(-50%);
     }
 
-    /* Animation pour les icônes */
     .sidebar .nav>.nav-item>a i {
         transition: transform 0.3s ease;
     }
@@ -376,74 +306,21 @@ function isSubmenuOpen($dir)
     .sidebar .nav>.nav-item:hover>a i {
         transform: scale(1.1);
     }
-
-    /* Scrollbar personnalisé */
-    .sidebar-wrapper::-webkit-scrollbar {
-        width: 6px;
-    }
-
-    .sidebar-wrapper::-webkit-scrollbar-track {
-        background: rgba(255, 255, 255, 0.05);
-    }
-
-    .sidebar-wrapper::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, 0.2);
-        border-radius: 10px;
-    }
-
-    .sidebar-wrapper::-webkit-scrollbar-thumb:hover {
-        background: rgba(255, 255, 255, 0.3);
-    }
-
-    /* Logo */
-    .sidebar .logo-header {
-        padding: 20px 15px;
-        text-align: center;
-    }
-
-    .sidebar .logo-header .logo img {
-        max-width: 100%;
-        height: auto;
-    }
-
-    /* Submenu */
-    .sidebar .nav-collapse {
-        background: rgba(0, 0, 0, 0.2);
-    }
-
-    .sidebar .nav-collapse .nav-item.active a {
-        background: rgba(23, 125, 255, 0.2);
-        border-left: 3px solid #177dff;
-        color: #177dff !important;
-    }
-
-    /* Responsive */
-    @media (max-width: 991px) {
-        .sidebar {
-            margin-left: -275px;
-        }
-
-        .sidebar.show {
-            margin-left: 0;
-        }
-    }
 </style>
 
 <script>
     document.addEventListener('DOMContentLoaded', function() {
-        // Fermer automatiquement les autres submenus quand on en ouvre un
         const collapseElements = document.querySelectorAll('.sidebar .collapse');
         collapseElements.forEach(function(element) {
             element.addEventListener('show.bs.collapse', function() {
                 collapseElements.forEach(function(other) {
                     if (other !== element && other.classList.contains('show')) {
-                        bootstrap.Collapse.getInstance(other).hide();
+                        bootstrap.Collapse.getInstance(other)?.hide();
                     }
                 });
             });
         });
 
-        // Ouvrir automatiquement le submenu actif
         const activeSubmenu = document.querySelector('.sidebar .nav-collapse .active');
         if (activeSubmenu) {
             const parentCollapse = activeSubmenu.closest('.collapse');

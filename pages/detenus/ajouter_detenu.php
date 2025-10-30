@@ -81,7 +81,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ];
 
             $detenuId = $detenuMgr->create($data, $_SESSION['user_id']);
-            
+
             if ($detenuId) {
                 log_activity($pdo, $_SESSION['user_id'], 'Ajout détenu', "Nouveau détenu ID: $detenuId");
                 $success = "Détenu ajouté avec succès !";
@@ -93,9 +93,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 }
-
+$refMgr->initializeDefaultData();
 $grades = $refMgr->getAllGrades();
 $unites = $refMgr->getAllUnites();
+
+
 ?>
 <!DOCTYPE html>
 <html lang="fr">
@@ -132,23 +134,23 @@ $unites = $refMgr->getAllUnites();
                     </div>
 
                     <?php if (!empty($errors)): ?>
-                    <div class="alert alert-danger alert-dismissible fade show">
-                        <strong><i class="fas fa-exclamation-circle me-2"></i>Erreurs :</strong>
-                        <ul class="mb-0">
-                            <?php foreach ($errors as $error): ?>
-                            <li><?= htmlspecialchars($error) ?></li>
-                            <?php endforeach; ?>
-                        </ul>
-                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                    </div>
+                        <div class="alert alert-danger alert-dismissible fade show">
+                            <strong><i class="fas fa-exclamation-circle me-2"></i>Erreurs :</strong>
+                            <ul class="mb-0">
+                                <?php foreach ($errors as $error): ?>
+                                    <li><?= htmlspecialchars($error) ?></li>
+                                <?php endforeach; ?>
+                            </ul>
+                            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                        </div>
                     <?php endif; ?>
 
                     <?php if ($success): ?>
-                    <div class="alert alert-success alert-dismissible fade show">
-                        <strong><i class="fas fa-check-circle me-2"></i></strong>
-                        <?= htmlspecialchars($success) ?>
-                        <p class="mb-0"><i class="fas fa-spinner fa-spin me-2"></i>Redirection en cours...</p>
-                    </div>
+                        <div class="alert alert-success alert-dismissible fade show">
+                            <strong><i class="fas fa-check-circle me-2"></i></strong>
+                            <?= htmlspecialchars($success) ?>
+                            <p class="mb-0"><i class="fas fa-spinner fa-spin me-2"></i>Redirection en cours...</p>
+                        </div>
                     <?php endif; ?>
 
                     <form method="POST" enctype="multipart/form-data">
@@ -250,25 +252,18 @@ $unites = $refMgr->getAllUnites();
                                             <select name="grade_id" class="form-select" required>
                                                 <option value="">Sélectionner un grade</option>
                                                 <?php foreach ($grades as $grade): ?>
-                                                <option value="<?= $grade['id'] ?>"
-                                                    <?= ($_POST['grade_id'] ?? '') == $grade['id'] ? 'selected' : '' ?>>
-                                                    <?= htmlspecialchars($grade['code'] . ' - ' . $grade['libelle']) ?>
-                                                </option>
+                                                    <option value="<?= $grade['id'] ?>"
+                                                        <?= ($_POST['grade_id'] ?? '') == $grade['id'] ? 'selected' : '' ?>>
+                                                        <?= htmlspecialchars($grade['code'] . ' - ' . $grade['libelle']) ?>
+                                                    </option>
                                                 <?php endforeach; ?>
                                             </select>
                                         </div>
 
-                                        <div class="mb-3">
-                                            <label class="form-label">Unité <span class="text-danger">*</span></label>
-                                            <select name="unite_id" class="form-select" required>
-                                                <option value="">Sélectionner une unité</option>
-                                                <?php foreach ($unites as $unite): ?>
-                                                <option value="<?= $unite['id'] ?>"
-                                                    <?= ($_POST['unite_id'] ?? '') == $unite['id'] ? 'selected' : '' ?>>
-                                                    <?= htmlspecialchars($unite['code'] . ' - ' . $unite['nom']) ?>
-                                                </option>
-                                                <?php endforeach; ?>
-                                            </select>
+                                        <div class="col-md-6 mb-3">
+                                            <label class="form-label">Unité</label>
+                                            <input type="text" name="unite" class="form-control"
+                                                value="<?= htmlspecialchars($_POST['unite'] ?? '') ?>">
                                         </div>
 
                                         <div class="mb-3">

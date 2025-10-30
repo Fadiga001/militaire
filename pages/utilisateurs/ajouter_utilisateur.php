@@ -1,8 +1,18 @@
 <?php
 session_start();
+if (!isset($_SESSION['user_id']) || $_SESSION['user_role'] !== 'ADMIN') {
+    header('Location: ../../index.php');
+    exit();
+}
 
 require_once '../../includes/db.php';
 require_once '../../includes/classes/autoload.php';
+require_once '../../includes/logs.php';
+
+$stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
+$stmt->execute([$_SESSION['user_id']]);
+$user = $stmt->fetch();
+$name = $user ? htmlspecialchars($user['nom'] . ' ' . $user['prenom']) : '';
 
 $userMgr = new UserManager($pdo);
 
@@ -64,11 +74,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['generate_password'])
             'must_change_password' => isset($_POST['must_change_password'])
         ];
 
-        $userId = $userMgr->create($data, $_SESSION['user_id'] ?? null);
+        $userId = $userMgr->create($data, $_SESSION['user_id']);
 
         if ($userId) {
+            log_activity($pdo, $_SESSION['user_id'], 'Création utilisateur', "Nouvel utilisateur: {$data['username']} (ID: $userId)");
             $success = "Utilisateur créé avec succès !";
-            header("refresh:2;url=../../index.php");
+            header("refresh:2;url=voir_utilisateur.php?id=$userId");
         } else {
             $errors[] = "Erreur lors de la création de l'utilisateur.";
         }
@@ -84,58 +95,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['generate_password'])
     <meta content="width=device-width, initial-scale=1.0, shrink-to-fit=no" name="viewport" />
     <?php include '../../requires/link.php'; ?>
     <style>
-        .password-strength {
-            height: 5px;
-            border-radius: 3px;
-            margin-top: 5px;
-            transition: all 0.3s;
-        }
+    .password-strength {
+        height: 5px;
+        border-radius: 3px;
+        margin-top: 5px;
+        transition: all 0.3s;
+    }
 
-        .strength-weak {
-            background: #dc3545;
-            width: 33%;
-        }
+    .strength-weak {
+        background: #dc3545;
+        width: 33%;
+    }
 
-        .strength-medium {
-            background: #ffc107;
-            width: 66%;
-        }
+    .strength-medium {
+        background: #ffc107;
+        width: 66%;
+    }
 
-        .strength-strong {
-            background: #28a745;
-            width: 100%;
-        }
-
-        /* Centrage vertical et horizontal du formulaire */
-        html,
-        body {
-            height: 100%;
-        }
-
-        .wrapper.centered {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            padding: 20px;
-            background: #f8f9fa;
-        }
-
-        .main-panel {
-            max-width: 1200px;
-            width: 100%;
-        }
-
-        .page-inner {
-            width: 100%;
-        }
+    .strength-strong {
+        background: #28a745;
+        width: 100%;
+    }
     </style>
 </head>
 
 <body>
-    <div class="wrapper centered">
+    <div class="wrapper">
+        <?php include '../../requires/sidebar.php'; ?>
         <div class="main-panel">
-            <div class="container ">
+            <?php include '../../requires/main-header.php'; ?>
+            <div class="container">
                 <div class="page-inner">
                     <div class="page-header">
                         <h3 class="fw-bold mb-3">
@@ -151,23 +140,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['generate_password'])
                     </div>
 
                     <?php if (!empty($errors)): ?>
-                        <div class="alert alert-danger alert-dismissible fade show">
-                            <strong><i class="fas fa-exclamation-circle me-2"></i>Erreurs :</strong>
-                            <ul class="mb-0">
-                                <?php foreach ($errors as $error): ?>
-                                    <li><?= htmlspecialchars($error) ?></li>
-                                <?php endforeach; ?>
-                            </ul>
-                            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                        </div>
+                    <div class="alert alert-danger alert-dismissible fade show">
+                        <strong><i class="fas fa-exclamation-circle me-2"></i>Erreurs :</strong>
+                        <ul class="mb-0">
+                            <?php foreach ($errors as $error): ?>
+                            <li><?= htmlspecialchars($error) ?></li>
+                            <?php endforeach; ?>
+                        </ul>
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
                     <?php endif; ?>
 
                     <?php if ($success): ?>
-                        <div class="alert alert-success alert-dismissible fade show">
-                            <strong><i class="fas fa-check-circle me-2"></i></strong>
-                            <?= htmlspecialchars($success) ?>
-                            <p class="mb-0"><i class="fas fa-spinner fa-spin me-2"></i>Redirection en cours...</p>
-                        </div>
+                    <div class="alert alert-success alert-dismissible fade show">
+                        <strong><i class="fas fa-check-circle me-2"></i></strong>
+                        <?= htmlspecialchars($success) ?>
+                        <p class="mb-0"><i class="fas fa-spinner fa-spin me-2"></i>Redirection en cours...</p>
+                    </div>
                     <?php endif; ?>
 
                     <form method="POST">
@@ -236,16 +225,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['generate_password'])
                                         </div>
 
                                         <?php if ($generatedPassword): ?>
-                                            <div class="alert alert-success mt-3">
-                                                <strong>Mot de passe généré :</strong><br>
-                                                <code class="fs-5"><?= htmlspecialchars($generatedPassword) ?></code>
-                                                <button type="button" class="btn btn-sm btn-success float-end"
-                                                    onclick="copyToClipboard('<?= htmlspecialchars($generatedPassword) ?>')">
-                                                    <i class="fas fa-copy"></i> Copier
-                                                </button>
-                                                <br><small class="text-muted">Notez-le ou communiquez-le à l'utilisateur de
-                                                    manière sécurisée</small>
-                                            </div>
+                                        <div class="alert alert-success mt-3">
+                                            <strong>Mot de passe généré :</strong><br>
+                                            <code class="fs-5"><?= htmlspecialchars($generatedPassword) ?></code>
+                                            <button type="button" class="btn btn-sm btn-success float-end"
+                                                onclick="copyToClipboard('<?= htmlspecialchars($generatedPassword) ?>')">
+                                                <i class="fas fa-copy"></i> Copier
+                                            </button>
+                                            <br><small class="text-muted">Notez-le ou communiquez-le à l'utilisateur de
+                                                manière sécurisée</small>
+                                        </div>
                                         <?php endif; ?>
                                     </div>
                                 </div>
@@ -316,85 +305,121 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['generate_password'])
                                         </div>
                                     </div>
                                 </div>
+
+                                <!-- Info rôles -->
+                                <div class="card mt-3">
+                                    <div class="card-header bg-info text-white">
+                                        <h4 class="card-title mb-0">
+                                            <i class="fas fa-info-circle me-2"></i>Permissions par Rôle
+                                        </h4>
+                                    </div>
+                                    <div class="card-body">
+                                        <h6 class="text-danger"><i class="fas fa-crown me-2"></i>Administrateur</h6>
+                                        <ul class="small mb-3">
+                                            <li>Accès complet à toutes les fonctionnalités</li>
+                                            <li>Gestion des utilisateurs</li>
+                                            <li>Suppression et modification sans restriction</li>
+                                            <li>Accès aux logs d'audit</li>
+                                        </ul>
+
+                                        <h6 class="text-primary"><i class="fas fa-user me-2"></i>Utilisateur</h6>
+                                        <ul class="small mb-3">
+                                            <li>Ajout, modification de détenus/condamnations</li>
+                                            <li>Consultation de toutes les données</li>
+                                            <li>Pas d'accès à l'administration</li>
+                                        </ul>
+
+                                        <h6 class="text-info"><i class="fas fa-eye me-2"></i>Lecture seule</h6>
+                                        <ul class="small mb-0">
+                                            <li>Consultation uniquement</li>
+                                            <li>Aucune modification possible</li>
+                                            <li>Génération de rapports</li>
+                                        </ul>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
                         <div class="row mt-4">
                             <div class="col-12">
                                 <div class="card">
-                                    <button type="submit" class="btn btn-primary">
-                                        <i class="fas fa-save me-2"></i>Créer l'Utilisateur
-                                    </button>
+                                    <div class="card-body text-end">
+                                        <a href="utilisateurs.php" class="btn btn-secondary me-2">
+                                            <i class="fas fa-times me-2"></i>Annuler
+                                        </a>
+                                        <button type="submit" class="btn btn-primary">
+                                            <i class="fas fa-save me-2"></i>Créer l'Utilisateur
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
+                    </form>
                 </div>
-                </form>
             </div>
         </div>
-    </div>
     </div>
 
     <?php include '../../requires/script.php'; ?>
     <script>
-        // Toggle password visibility
-        function togglePassword(fieldId) {
-            const field = document.getElementById(fieldId);
-            field.type = field.type === 'password' ? 'text' : 'password';
+    // Toggle password visibility
+    function togglePassword(fieldId) {
+        const field = document.getElementById(fieldId);
+        field.type = field.type === 'password' ? 'text' : 'password';
+    }
+
+    // Copy to clipboard
+    function copyToClipboard(text) {
+        navigator.clipboard.writeText(text).then(() => {
+            alert('Mot de passe copié dans le presse-papier !');
+        });
+    }
+
+    // Password strength checker
+    document.getElementById('password')?.addEventListener('input', function() {
+        const password = this.value;
+        const strengthBar = document.getElementById('password-strength');
+        const feedback = document.getElementById('password-feedback');
+
+        if (!password) {
+            strengthBar.className = 'password-strength';
+            feedback.textContent = '';
+            return;
         }
 
-        // Copy to clipboard
-        function copyToClipboard(text) {
-            navigator.clipboard.writeText(text).then(() => {
-                alert('Mot de passe copié dans le presse-papier !');
-            });
-        }
+        let score = 0;
+        const checks = [];
 
-        // Password strength checker
-        document.getElementById('password')?.addEventListener('input', function() {
-            const password = this.value;
-            const strengthBar = document.getElementById('password-strength');
-            const feedback = document.getElementById('password-feedback');
+        if (password.length >= 8) score++;
+        else checks.push('8 caractères min');
 
-            if (!password) {
-                strengthBar.className = 'password-strength';
-                feedback.textContent = '';
-                return;
-            }
+        if (/[a-z]/.test(password)) score++;
+        else checks.push('1 minuscule');
 
-            let score = 0;
-            const checks = [];
+        if (/[A-Z]/.test(password)) score++;
+        else checks.push('1 majuscule');
 
-            if (password.length >= 8) score++;
-            else checks.push('8 caractères min');
+        if (/[0-9]/.test(password)) score++;
+        else checks.push('1 chiffre');
 
-            if (/[a-z]/.test(password)) score++;
-            else checks.push('1 minuscule');
+        if (/[^a-zA-Z0-9]/.test(password)) score++;
+        else checks.push('1 caractère spécial');
 
-            if (/[A-Z]/.test(password)) score++;
-            else checks.push('1 majuscule');
+        strengthBar.className = 'password-strength ' + (
+            score < 3 ? 'strength-weak' :
+            score < 5 ? 'strength-medium' : 'strength-strong'
+        );
 
-            if (/[0-9]/.test(password)) score++;
-            else checks.push('1 chiffre');
+        feedback.textContent = checks.length > 0 ?
+            'Manque: ' + checks.join(', ') :
+            '✓ Mot de passe fort';
+        feedback.className = 'text-' + (score < 3 ? 'danger' : score < 5 ? 'warning' : 'success');
+    });
 
-            if (/[^a-zA-Z0-9]/.test(password)) score++;
-            else checks.push('1 caractère spécial');
-
-            strengthBar.className = 'password-strength ' + (
-                score < 3 ? 'strength-weak' :
-                score < 5 ? 'strength-medium' : 'strength-strong'
-            );
-
-            feedback.textContent = checks.length > 0 ?
-                'Manque: ' + checks.join(', ') :
-                '✓ Mot de passe fort';
-            feedback.className = 'text-' + (score < 3 ? 'danger' : score < 5 ? 'warning' : 'success');
-        });
-
-        // Lowercase username automatically
-        document.querySelector('input[name="username"]')?.addEventListener('input', function() {
-            this.value = this.value.toLowerCase().replace(/[^a-z0-9._-]/g, '');
-        });
+    // Lowercase username automatically
+    document.querySelector('input[name="username"]')?.addEventListener('input', function() {
+        this.value = this.value.toLowerCase().replace(/[^a-z0-9._-]/g, '');
+    });
     </script>
 </body>
 
