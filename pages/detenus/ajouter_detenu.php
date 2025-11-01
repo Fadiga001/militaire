@@ -260,10 +260,17 @@ $unites = $refMgr->getAllUnites();
                                             </select>
                                         </div>
 
-                                        <div class="col-md-6 mb-3">
-                                            <label class="form-label">Unité</label>
-                                            <input type="text" name="unite" class="form-control"
-                                                value="<?= htmlspecialchars($_POST['unite'] ?? '') ?>">
+                                        <div class="mb-3">
+                                            <label class="form-label">Unité <span class="text-danger">*</span></label>
+                                            <select name="unite_id" class="form-select" required>
+                                                <option value="">Sélectionner une unité</option>
+                                                <?php foreach ($unites as $unite): ?>
+                                                    <option value="<?= $unite['id'] ?>"
+                                                        <?= ($_POST['unite_id'] ?? '') == $unite['id'] ? 'selected' : '' ?>>
+                                                        <?= htmlspecialchars($unite['code'] . ' - ' . $unite['nom']) ?>
+                                                    </option>
+                                                <?php endforeach; ?>
+                                            </select>
                                         </div>
 
                                         <div class="mb-3">

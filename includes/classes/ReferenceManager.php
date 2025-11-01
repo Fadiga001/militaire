@@ -127,6 +127,33 @@ class ReferenceManager
         }
     }
 
+    /**
+     * Mettre à jour une unité
+     */
+    public function updateUnite(int $id, array $data): bool
+    {
+        try {
+            $sql = "UPDATE unites SET
+                code = :code,
+                nom = :nom,
+                type = :type,
+                localisation = :localisation
+                WHERE id = :id";
+
+            $stmt = $this->pdo->prepare($sql);
+            return $stmt->execute([
+                ':code' => $data['code'],
+                ':nom' => $data['nom'],
+                ':type' => $data['type'],
+                ':localisation' => $data['localisation'] ?? null,
+                ':id' => $id
+            ]);
+        } catch (PDOException $e) {
+            error_log("Erreur mise à jour unité: " . $e->getMessage());
+            return false;
+        }
+    }
+
     // ========================================================================
     // INFRACTIONS
     // ========================================================================

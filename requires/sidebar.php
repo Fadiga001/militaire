@@ -103,10 +103,60 @@ function isSubmenuOpen($dir)
                     </div>
                 </li>
 
+                <!-- Détentions Préventives -->
+                <li class="nav-item <?= isActive(null, 'detentions_preventives') ?>">
+                    <a href="../../pages/detentions_preventives/detentions_provisoires.php">
+                        <i class="fas fa-clock"></i>
+                        <p>Détentions Préventives</p>
+                        <?php
+                        try {
+                            $dpStmt = $pdo->query("
+                                SELECT COUNT(*) as nb 
+                                FROM condamnations 
+                                WHERE est_en_detention_preventive = TRUE 
+                                AND date_limite_detention_preventive < NOW()
+                            ");
+                            $nbDepassees = (int)$dpStmt->fetch()['nb'];
+                            if ($nbDepassees > 0):
+                        ?>
+                        <span class="badge badge-danger"><?= $nbDepassees ?></span>
+                        <?php
+                            endif;
+                        } catch (Exception $e) {
+                        }
+                        ?>
+                    </a>
+                </li>
+
                 <!-- SECTION: DONNÉES DE RÉFÉRENCE -->
                 <li class="nav-section">
                     <span class="sidebar-mini-icon"><i class="fas fa-ellipsis-h"></i></span>
                     <h4 class="text-section">Données de Référence</h4>
+                </li>
+
+                <!-- Grades & Unités -->
+                <li class="nav-item <?= isActive(null, 'grades') || isActive(null, 'unites') ? 'active' : '' ?>">
+                    <a data-bs-toggle="collapse" href="#grades-unites" class="collapsed"
+                        aria-expanded="<?= isSubmenuOpen('grades') || isSubmenuOpen('unites') ? 'true' : 'false' ?>">
+                        <i class="fas fa-star"></i>
+                        <p>Grades & Unités</p>
+                        <span class="caret"></span>
+                    </a>
+                    <div class="collapse <?= isSubmenuOpen('grades') || isSubmenuOpen('unites') ? 'show' : '' ?>"
+                        id="grades-unites">
+                        <ul class="nav nav-collapse">
+                            <li class="<?= isActive('grades.php', 'grades') ?>">
+                                <a href="../../pages/grades/grades.php">
+                                    <span class="sub-item">Grades Militaires</span>
+                                </a>
+                            </li>
+                            <li class="<?= isActive('unites.php', 'unites') ?>">
+                                <a href="../../pages/unites/unites.php">
+                                    <span class="sub-item">Unités Militaires</span>
+                                </a>
+                            </li>
+                        </ul>
+                    </div>
                 </li>
 
                 <!-- Infractions -->
@@ -157,10 +207,39 @@ function isSubmenuOpen($dir)
                     </div>
                 </li>
 
-                <!-- SECTION: RAPPORTS -->
+                <!-- SECTION: RAPPORTS & STATISTIQUES -->
                 <li class="nav-section">
                     <span class="sidebar-mini-icon"><i class="fas fa-ellipsis-h"></i></span>
                     <h4 class="text-section">Rapports & Statistiques</h4>
+                </li>
+
+                <!-- Rapports -->
+                <li class="nav-item <?= isActive(null, 'rapports') ?>">
+                    <a data-bs-toggle="collapse" href="#rapports" class="collapsed"
+                        aria-expanded="<?= isSubmenuOpen('rapports') ? 'true' : 'false' ?>">
+                        <i class="fas fa-chart-bar"></i>
+                        <p>Rapports</p>
+                        <span class="caret"></span>
+                    </a>
+                    <div class="collapse <?= isSubmenuOpen('rapports') ?>" id="rapports">
+                        <ul class="nav nav-collapse">
+                            <li class="<?= isActive('rapport_general.php', 'rapports') ?>">
+                                <a href="../../pages/rapports/rapport_general.php">
+                                    <span class="sub-item">Rapport Général</span>
+                                </a>
+                            </li>
+                            <li class="<?= isActive('rapport_liberations.php', 'rapports') ?>">
+                                <a href="../../pages/rapports/rapport_liberations.php">
+                                    <span class="sub-item">Libérations Prévues</span>
+                                </a>
+                            </li>
+                            <li class="<?= isActive('rapport_statistiques.php', 'rapports') ?>">
+                                <a href="../../pages/rapports/rapport_statistiques.php">
+                                    <span class="sub-item">Statistiques Détaillées</span>
+                                </a>
+                            </li>
+                        </ul>
+                    </div>
                 </li>
 
                 <!-- Notifications -->
@@ -178,7 +257,7 @@ function isSubmenuOpen($dir)
                             $nbNotif = (int)$notifStmt->fetch()['nb'];
                             if ($nbNotif > 0):
                         ?>
-                                <span class="badge badge-danger"><?= $nbNotif ?></span>
+                        <span class="badge badge-danger"><?= $nbNotif ?></span>
                         <?php
                             endif;
                         } catch (Exception $e) {
@@ -189,51 +268,75 @@ function isSubmenuOpen($dir)
 
                 <!-- SECTION: ADMINISTRATION (ADMIN UNIQUEMENT) -->
                 <?php if ($_SESSION['user_role'] === 'ADMIN'): ?>
-                    <li class="nav-section">
-                        <span class="sidebar-mini-icon"><i class="fas fa-ellipsis-h"></i></span>
-                        <h4 class="text-section">Administration</h4>
-                    </li>
+                <li class="nav-section">
+                    <span class="sidebar-mini-icon"><i class="fas fa-ellipsis-h"></i></span>
+                    <h4 class="text-section">Administration</h4>
+                </li>
 
-                    <!-- Utilisateurs -->
-                    <li class="nav-item <?= isActive(null, 'utilisateurs') ?>">
-                        <a data-bs-toggle="collapse" href="#utilisateurs" class="collapsed"
-                            aria-expanded="<?= isSubmenuOpen('utilisateurs') ? 'true' : 'false' ?>">
-                            <i class="fas fa-user-shield"></i>
-                            <p>Utilisateurs</p>
-                            <?php
+                <!-- Utilisateurs -->
+                <li class="nav-item <?= isActive(null, 'utilisateurs') ?>">
+                    <a data-bs-toggle="collapse" href="#utilisateurs" class="collapsed"
+                        aria-expanded="<?= isSubmenuOpen('utilisateurs') ? 'true' : 'false' ?>">
+                        <i class="fas fa-user-shield"></i>
+                        <p>Utilisateurs</p>
+                        <?php
                             // Badge: utilisateurs verrouillés
                             try {
                                 $lockStmt = $pdo->query("
-                                SELECT COUNT(*) as nb 
-                                FROM users 
-                                WHERE locked_until IS NOT NULL AND locked_until > NOW()
-                            ");
+                                    SELECT COUNT(*) as nb 
+                                    FROM users 
+                                    WHERE locked_until IS NOT NULL AND locked_until > NOW()
+                                ");
                                 $nbLocked = (int)$lockStmt->fetch()['nb'];
                                 if ($nbLocked > 0):
                             ?>
-                                    <span class="badge badge-warning"><?= $nbLocked ?></span>
-                            <?php
+                        <span class="badge badge-warning"><?= $nbLocked ?></span>
+                        <?php
                                 endif;
                             } catch (Exception $e) {
                             }
                             ?>
-                            <span class="caret"></span>
-                        </a>
-                        <div class="collapse <?= isSubmenuOpen('utilisateurs') ?>" id="utilisateurs">
-                            <ul class="nav nav-collapse">
-                                <li class="<?= isActive('utilisateurs.php', 'utilisateurs') ?>">
-                                    <a href="../../pages/utilisateurs/utilisateurs.php">
-                                        <span class="sub-item">Liste des Utilisateurs</span>
-                                    </a>
-                                </li>
-                                <li class="<?= isActive('ajouter_utilisateur.php', 'utilisateurs') ?>">
-                                    <a href="../../pages/utilisateurs/ajouter_utilisateur.php">
-                                        <span class="sub-item">Ajouter un Utilisateur</span>
-                                    </a>
-                                </li>
-                            </ul>
-                        </div>
-                    </li>
+                        <span class="caret"></span>
+                    </a>
+                    <div class="collapse <?= isSubmenuOpen('utilisateurs') ?>" id="utilisateurs">
+                        <ul class="nav nav-collapse">
+                            <li class="<?= isActive('utilisateurs.php', 'utilisateurs') ?>">
+                                <a href="../../pages/utilisateurs/utilisateurs.php">
+                                    <span class="sub-item">Liste des Utilisateurs</span>
+                                </a>
+                            </li>
+                            <li class="<?= isActive('ajouter_utilisateur.php', 'utilisateurs') ?>">
+                                <a href="../../pages/utilisateurs/ajouter_utilisateur.php">
+                                    <span class="sub-item">Ajouter un Utilisateur</span>
+                                </a>
+                            </li>
+                        </ul>
+                    </div>
+                </li>
+
+                <!-- Logs & Audit -->
+                <li class="nav-item <?= isActive(null, 'logs') ?>">
+                    <a data-bs-toggle="collapse" href="#logs" class="collapsed"
+                        aria-expanded="<?= isSubmenuOpen('logs') ? 'true' : 'false' ?>">
+                        <i class="fas fa-file-alt"></i>
+                        <p>Logs & Audit</p>
+                        <span class="caret"></span>
+                    </a>
+                    <div class="collapse <?= isSubmenuOpen('logs') ?>" id="logs">
+                        <ul class="nav nav-collapse">
+                            <li class="<?= isActive('logs_activites.php', 'logs') ?>">
+                                <a href="../../pages/logs/logs_activites.php">
+                                    <span class="sub-item">Logs d'Activités</span>
+                                </a>
+                            </li>
+                            <li class="<?= isActive('audit_trail.php', 'logs') ?>">
+                                <a href="../../pages/logs/audit_trail.php">
+                                    <span class="sub-item">Piste d'Audit</span>
+                                </a>
+                            </li>
+                        </ul>
+                    </div>
+                </li>
                 <?php endif; ?>
 
                 <!-- SECTION: COMPTE PERSONNEL (TOUS) -->
@@ -247,6 +350,14 @@ function isSubmenuOpen($dir)
                     <a href="../../pages/utilisateurs/mon_profil.php">
                         <i class="fas fa-user-circle"></i>
                         <p>Mon Profil</p>
+                    </a>
+                </li>
+
+                <!-- Paramètres -->
+                <li class="nav-item <?= isActive('parametres.php', 'parametres') ?>">
+                    <a href="../../pages/parametres/parametres.php">
+                        <i class="fas fa-cog"></i>
+                        <p>Paramètres</p>
                     </a>
                 </li>
 
@@ -265,70 +376,149 @@ function isSubmenuOpen($dir)
 <!-- End Sidebar -->
 
 <style>
-    .sidebar[data-background-color="dark"] {
-        background: linear-gradient(180deg, #1a1f33 0%, #0d1117 100%);
+.sidebar[data-background-color="dark"] {
+    background: linear-gradient(180deg, #1a1f33 0%, #0d1117 100%);
+}
+
+.sidebar .nav>.nav-item.active>a {
+    background: linear-gradient(90deg, rgba(23, 125, 255, 0.2) 0%, rgba(23, 125, 255, 0.05) 100%);
+    border-left: 4px solid #177dff;
+    color: #177dff !important;
+}
+
+.sidebar .nav>.nav-item.active>a i {
+    color: #177dff;
+}
+
+.sidebar .nav-section .text-section {
+    color: #6c757d;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: 20px;
+    padding-left: 15px;
+}
+
+.sidebar .nav .nav-item a:hover {
+    background: rgba(255, 255, 255, 0.05);
+    transition: all 0.3s ease;
+}
+
+.sidebar .nav .nav-item a .badge {
+    position: absolute;
+    right: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 10px;
+    padding: 3px 6px;
+}
+
+.sidebar .nav>.nav-item>a i {
+    transition: transform 0.3s ease;
+    width: 25px;
+    text-align: center;
+}
+
+.sidebar .nav>.nav-item:hover>a i {
+    transform: scale(1.15);
+}
+
+.sidebar .nav-collapse .sub-item {
+    font-size: 13px;
+    padding-left: 10px;
+}
+
+.sidebar .nav-collapse .nav-item.active a {
+    color: #177dff;
+    font-weight: 600;
+}
+
+/* Animation du caret */
+.sidebar .nav-item a[aria-expanded="true"] .caret {
+    transform: rotate(180deg);
+    transition: transform 0.3s ease;
+}
+
+.sidebar .nav-item a .caret {
+    transition: transform 0.3s ease;
+}
+
+/* Style pour les badges de notification */
+.sidebar .badge-danger {
+    background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
+    box-shadow: 0 2px 8px rgba(255, 65, 108, 0.4);
+    animation: pulse 2s infinite;
+}
+
+.sidebar .badge-warning {
+    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    box-shadow: 0 2px 8px rgba(245, 87, 108, 0.4);
+}
+
+@keyframes pulse {
+
+    0%,
+    100% {
+        transform: translateY(-50%) scale(1);
     }
 
-    .sidebar .nav>.nav-item.active>a {
-        background: linear-gradient(90deg, rgba(23, 125, 255, 0.2) 0%, rgba(23, 125, 255, 0.05) 100%);
-        border-left: 4px solid #177dff;
-        color: #177dff !important;
+    50% {
+        transform: translateY(-50%) scale(1.1);
     }
+}
 
-    .sidebar .nav>.nav-item.active>a i {
-        color: #177dff;
-    }
+/* Amélioration du scrollbar */
+.sidebar-wrapper::-webkit-scrollbar {
+    width: 6px;
+}
 
-    .sidebar .nav-section .text-section {
-        color: #6c757d;
-        font-size: 11px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        margin-top: 20px;
-    }
+.sidebar-wrapper::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.05);
+}
 
-    .sidebar .nav .nav-item a:hover {
-        background: rgba(255, 255, 255, 0.05);
-    }
+.sidebar-wrapper::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 10px;
+}
 
-    .sidebar .nav .nav-item a .badge {
-        position: absolute;
-        right: 20px;
-        top: 50%;
-        transform: translateY(-50%);
-    }
-
-    .sidebar .nav>.nav-item>a i {
-        transition: transform 0.3s ease;
-    }
-
-    .sidebar .nav>.nav-item:hover>a i {
-        transform: scale(1.1);
-    }
+.sidebar-wrapper::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
 </style>
 
 <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        const collapseElements = document.querySelectorAll('.sidebar .collapse');
-        collapseElements.forEach(function(element) {
-            element.addEventListener('show.bs.collapse', function() {
-                collapseElements.forEach(function(other) {
-                    if (other !== element && other.classList.contains('show')) {
-                        bootstrap.Collapse.getInstance(other)?.hide();
-                    }
-                });
+document.addEventListener('DOMContentLoaded', function() {
+    // Gestion des collapse - fermer les autres quand on en ouvre un
+    const collapseElements = document.querySelectorAll('.sidebar .collapse');
+    collapseElements.forEach(function(element) {
+        element.addEventListener('show.bs.collapse', function() {
+            collapseElements.forEach(function(other) {
+                if (other !== element && other.classList.contains('show')) {
+                    bootstrap.Collapse.getInstance(other)?.hide();
+                }
             });
         });
-
-        const activeSubmenu = document.querySelector('.sidebar .nav-collapse .active');
-        if (activeSubmenu) {
-            const parentCollapse = activeSubmenu.closest('.collapse');
-            if (parentCollapse && !parentCollapse.classList.contains('show')) {
-                new bootstrap.Collapse(parentCollapse, {
-                    toggle: true
-                });
-            }
-        }
     });
+
+    // Auto-ouvrir le sous-menu actif
+    const activeSubmenu = document.querySelector('.sidebar .nav-collapse .active');
+    if (activeSubmenu) {
+        const parentCollapse = activeSubmenu.closest('.collapse');
+        if (parentCollapse && !parentCollapse.classList.contains('show')) {
+            new bootstrap.Collapse(parentCollapse, {
+                toggle: true
+            });
+        }
+    }
+
+    // Highlight du menu parent quand un sous-menu est actif
+    const activeNavItem = document.querySelector('.sidebar .nav-collapse .active');
+    if (activeNavItem) {
+        const parentNavItem = activeNavItem.closest('.nav-item');
+        if (parentNavItem) {
+            parentNavItem.classList.add('active');
+        }
+    }
+});
 </script>

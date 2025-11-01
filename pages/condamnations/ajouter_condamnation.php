@@ -76,7 +76,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ];
 
         $condamnationId = $condamnationMgr->create($data, $_SESSION['user_id']);
-        
+
         if ($condamnationId) {
             log_activity($pdo, $_SESSION['user_id'], 'Ajout condamnation', "Nouvelle condamnation ID: $condamnationId");
             $success = "Condamnation ajoutée avec succès ! Les dates de libération ont été calculées automatiquement.";
@@ -188,14 +188,14 @@ $lieux = $refMgr->getAllLieuxDetention();
                                                     class="text-danger">*</span></label>
                                             <select name="infraction_id" class="form-select" required>
                                                 <option value="">Sélectionner une infraction</option>
-                                                <?php 
+                                                <?php
                                                 $categories = ['CRIME' => 'Crimes', 'DELIT' => 'Délits', 'CONTRAVENTION' => 'Contraventions'];
-                                                foreach ($categories as $cat => $label): 
+                                                foreach ($categories as $cat => $label):
                                                 ?>
                                                 <optgroup label="<?= $label ?>">
-                                                    <?php 
+                                                    <?php
                                                         $infractionsCat = array_filter($infractions, fn($i) => $i['categorie'] === $cat);
-                                                        foreach ($infractionsCat as $inf): 
+                                                        foreach ($infractionsCat as $inf):
                                                         ?>
                                                     <option value="<?= $inf['id'] ?>"
                                                         <?= ($_POST['infraction_id'] ?? '') == $inf['id'] ? 'selected' : '' ?>>
@@ -283,9 +283,8 @@ $lieux = $refMgr->getAllLieuxDetention();
                                     </div>
                                     <div class="card-body">
                                         <div class="mb-3">
-                                            <label class="form-label">Date de Jugement <span
-                                                    class="text-danger">*</span></label>
-                                            <input type="date" name="date_jugement" class="form-control" required
+                                            <label class="form-label">Date de Jugement</label>
+                                            <input type="date" name="date_jugement" class="form-control"
                                                 value="<?= htmlspecialchars($_POST['date_jugement'] ?? '') ?>">
                                         </div>
 
@@ -310,16 +309,13 @@ $lieux = $refMgr->getAllLieuxDetention();
 
                                         <div class="row">
                                             <div class="col-md-6 mb-3">
-                                                <label class="form-label">Durée <span
-                                                        class="text-danger">*</span></label>
+                                                <label class="form-label">Durée</label>
                                                 <input type="number" name="peine_valeur" class="form-control" min="1"
-                                                    required
                                                     value="<?= htmlspecialchars($_POST['peine_valeur'] ?? '') ?>">
                                             </div>
                                             <div class="col-md-6 mb-3">
-                                                <label class="form-label">Unité <span
-                                                        class="text-danger">*</span></label>
-                                                <select name="peine_unite" class="form-select" required>
+                                                <label class="form-label">Unité</label>
+                                                <select name="peine_unite" class="form-select">
                                                     <option value="JOUR"
                                                         <?= ($_POST['peine_unite'] ?? '') === 'JOUR' ? 'selected' : '' ?>>
                                                         Jour(s)</option>
