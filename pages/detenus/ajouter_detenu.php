@@ -1,16 +1,14 @@
 <?php
-session_start();
-if (!isset($_SESSION['user_id'])) {
-    header('Location: ../../index.php');
-    exit();
-}
-
 require_once '../../includes/db.php';
 require_once '../../includes/classes/autoload.php';
+require_once '../../includes/auth.php';
+require_once '../../includes/csrf.php';
 require_once '../../includes/logs.php';
 
+Auth::requireAuth('../../index.php');
+
 $stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
-$stmt->execute([$_SESSION['user_id']]);
+$stmt->execute([Auth::id()]);
 $user = $stmt->fetch();
 $name = $user ? htmlspecialchars($user['nom'] . ' ' . $user['prenom']) : '';
 
@@ -21,6 +19,7 @@ $errors = [];
 $success = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    try { CSRF::verify(); } catch (Exception $e) { $errors[] = 'Session expirée. Veuillez recharger la page.'; }
     // Validation
     $required = ['nom', 'prenoms', 'sexe', 'grade_id', 'unite_id'];
     foreach ($required as $field) {
@@ -29,30 +28,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // Vérifier si le matricule existe (si fourni)
-    if (!empty($_POST['matricule_militaire'])) {
-        if ($detenuMgr->matriculeExists($_POST['matricule_militaire'])) {
-            $errors[] = "Ce matricule militaire existe déjà.";
-        }
-    }
+    // Note: le matricule interne ('matricule') est généré par trigger.
+    // Le matricule_militaire n'est pas unique dans le schéma actuel → pas de vérification d'unicité ici.
 
     if (empty($errors)) {
-        // Upload photo si fournie
+        // Upload photo si fournie (vérifications strictes)
         $photoPath = null;
         if (!empty($_FILES['photo']['name'])) {
             $allowedTypes = ['image/jpeg', 'image/png', 'image/jpg'];
-            if (in_array($_FILES['photo']['type'], $allowedTypes)) {
+            $maxSize = 5 * 1024 * 1024; // 5MB
+
+            $finfo = new finfo(FILEINFO_MIME_TYPE);
+            $detected = $finfo->file($_FILES['photo']['tmp_name']);
+
+            if (in_array($detected, $allowedTypes) && $_FILES['photo']['size'] <= $maxSize) {
                 $uploadDir = '../../uploads/photos/';
                 if (!is_dir($uploadDir)) {
                     mkdir($uploadDir, 0755, true);
                 }
                 $extension = pathinfo($_FILES['photo']['name'], PATHINFO_EXTENSION);
-                $filename = 'detenu_' . time() . '.' . $extension;
+                $random = bin2hex(random_bytes(6));
+                $filename = 'detenu_' . time() . '_' . $random . '.' . $extension;
                 if (move_uploaded_file($_FILES['photo']['tmp_name'], $uploadDir . $filename)) {
                     $photoPath = 'uploads/photos/' . $filename;
                 }
             } else {
-                $errors[] = "Format de photo invalide (JPG, PNG uniquement).";
+                $errors[] = "Photo invalide (JPG/PNG, max 5MB).";
             }
         }
 
@@ -80,10 +81,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'statut_actuel' => $_POST['statut_actuel'] ?? 'DETENTION_PROVISOIRE'
             ];
 
-            $detenuId = $detenuMgr->create($data, $_SESSION['user_id']);
+            $detenuId = $detenuMgr->create($data, Auth::id());
 
             if ($detenuId) {
-                log_activity($pdo, $_SESSION['user_id'], 'Ajout détenu', "Nouveau détenu ID: $detenuId");
+                log_activity($pdo, Auth::id(), 'Ajout détenu', "Nouveau détenu ID: $detenuId");
                 $success = "Détenu ajouté avec succès !";
                 // Redirection après 2 secondes
                 header("refresh:2;url=voir_detenu.php?id=$detenuId");
@@ -154,6 +155,7 @@ $unites = $refMgr->getAllUnites();
                     <?php endif; ?>
 
                     <form method="POST" enctype="multipart/form-data">
+                        <?= CSRF::field() ?>
                         <div class="row">
                             <!-- Informations personnelles -->
                             <div class="col-lg-6">
@@ -287,13 +289,7 @@ $unites = $refMgr->getAllUnites();
                                                 value="<?= htmlspecialchars($_POST['date_incorporation'] ?? '') ?>">
                                         </div>
 
-                                        <div class="mb-3">
-                                            <label class="form-label">Statut Initial</label>
-                                            <select name="statut_actuel" class="form-select">
-                                                <option value="DETENTION_PROVISOIRE">Détention Provisoire</option>
-                                                <option value="CONDAMNE">Condamné</option>
-                                            </select>
-                                        </div>
+                                        <input type="hidden" name="statut_actuel" value="DETENTION_PROVISOIRE">
                                     </div>
                                 </div>
 

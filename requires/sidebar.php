@@ -23,7 +23,7 @@ function isSubmenuOpen($dir)
     <div class="sidebar-logo">
         <div class="logo-header" data-background-color="dark">
             <a href="../../pages/dash/dashboard.php" class="logo">
-                <img src="../../assets/img/logo.png" alt="Logo" class="navbar-brand"
+                <img src="../../assets/img/logo1.png" alt="Logo" class="navbar-brand"
                     style="width:180px; height:140px; object-fit: contain;">
             </a>
             <div class="nav-toggle">
@@ -79,30 +79,7 @@ function isSubmenuOpen($dir)
                     </div>
                 </li>
 
-                <!-- Condamnations -->
-                <li class="nav-item <?= isActive(null, 'condamnations') ?>">
-                    <a data-bs-toggle="collapse" href="#condamnations" class="collapsed"
-                        aria-expanded="<?= isSubmenuOpen('condamnations') ? 'true' : 'false' ?>">
-                        <i class="fas fa-gavel"></i>
-                        <p>Condamnations</p>
-                        <span class="caret"></span>
-                    </a>
-                    <div class="collapse <?= isSubmenuOpen('condamnations') ?>" id="condamnations">
-                        <ul class="nav nav-collapse">
-                            <li class="<?= isActive('condamnations.php', 'condamnations') ?>">
-                                <a href="../../pages/condamnations/condamnations.php">
-                                    <span class="sub-item">Liste des Condamnations</span>
-                                </a>
-                            </li>
-                            <li class="<?= isActive('ajouter_condamnation.php', 'condamnations') ?>">
-                                <a href="../../pages/condamnations/ajouter_condamnation.php">
-                                    <span class="sub-item">Ajouter une Condamnation</span>
-                                </a>
-                            </li>
-                        </ul>
-                    </div>
-                </li>
-
+                
                 <!-- Détentions Préventives -->
                 <li class="nav-item <?= isActive(null, 'detentions_preventives') ?>">
                     <a href="../../pages/detentions_preventives/detentions_provisoires.php">
@@ -126,6 +103,30 @@ function isSubmenuOpen($dir)
                         }
                         ?>
                     </a>
+                </li>
+
+                <!-- Condamnations -->
+                <li class="nav-item <?= isActive(null, 'condamnations') ?>">
+                    <a data-bs-toggle="collapse" href="#condamnations" class="collapsed"
+                        aria-expanded="<?= isSubmenuOpen('condamnations') ? 'true' : 'false' ?>">
+                        <i class="fas fa-gavel"></i>
+                        <p>Condamnations</p>
+                        <span class="caret"></span>
+                    </a>
+                    <div class="collapse <?= isSubmenuOpen('condamnations') ?>" id="condamnations">
+                        <ul class="nav nav-collapse">
+                            <li class="<?= isActive('condamnations.php', 'condamnations') ?>">
+                                <a href="../../pages/condamnations/condamnations.php">
+                                    <span class="sub-item">Liste des Condamnations</span>
+                                </a>
+                            </li>
+                            <li class="<?= isActive('ajouter_condamnation.php', 'condamnations') ?>">
+                                <a href="../../pages/condamnations/ajouter_condamnation.php">
+                                    <span class="sub-item">Ajouter une Condamnation</span>
+                                </a>
+                            </li>
+                        </ul>
+                    </div>
                 </li>
 
                 <!-- SECTION: DONNÉES DE RÉFÉRENCE -->

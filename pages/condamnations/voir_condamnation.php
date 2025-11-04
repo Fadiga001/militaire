@@ -1,15 +1,13 @@
 <?php
-session_start();
-if (!isset($_SESSION['user_id'])) {
-    header('Location: ../../index.php');
-    exit();
-}
-
 require_once '../../includes/db.php';
 require_once '../../includes/classes/autoload.php';
+require_once '../../includes/auth.php';
+require_once '../../includes/csrf.php';
+
+Auth::requireAuth('../../index.php');
 
 $stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
-$stmt->execute([$_SESSION['user_id']]);
+$stmt->execute([Auth::id()]);
 $user = $stmt->fetch();
 $name = $user ? htmlspecialchars($user['nom'] . ' ' . $user['prenom']) : '';
 $role = $user['role'] ?? '';
@@ -22,6 +20,32 @@ if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
 }
 
 $condamnationId = (int)$_GET['id'];
+
+// Action admin: recalculer la date de libération (forcer)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'recalc') {
+    try {
+        CSRF::verify();
+        if (($user['role'] ?? '') !== 'ADMIN') {
+            throw new Exception('Action réservée aux administrateurs');
+        }
+        // Recalcul global pour cette condamnation: jours DP + total remises
+        $recalc = $pdo->prepare("\n  UPDATE condamnations c\n LEFT JOIN (\n SELECT condamnation_id, COALESCE(SUM(jours_remis),0) AS total_remises\n              FROM remises_peine\n              WHERE condamnation_id = :id\n              GROUP BY condamnation_id\n            ) r ON r.condamnation_id = c.id\n            SET c.date_liberation_effective = DATE_SUB(\n                  DATE_SUB(c.date_liberation_theorique, INTERVAL c.jours_detention_provisoire_total DAY),\n                  INTERVAL COALESCE(r.total_remises,0) DAY\n                )\n            WHERE c.id = :id\n        ");
+        $recalc->execute([':id' => $condamnationId]);
+
+        // Log d'audit
+        $audit = $pdo->prepare("\n            INSERT INTO audit_logs (user_id, action, entity_type, entity_id, new_values)\n VALUES (:user_id, 'RECALCUL_LIBERATION_FORCE', 'CONDAMNATION', :entity_id, :payload)\n        ");
+        $audit->execute([
+            ':user_id' => Auth::id(),
+            ':entity_id' => $condamnationId,
+            ':payload' => json_encode(['source' => 'voir_condamnation.php'], JSON_UNESCAPED_UNICODE)
+        ]);
+
+        header('Location: voir_condamnation.php?id=' . $condamnationId);
+        exit();
+    } catch (Exception $e) {
+        // silencieux: on retombera sur l'affichage
+    }
+}
 $condamnation = $condamnationMgr->getById($condamnationId);
 
 if (!$condamnation) {
@@ -32,6 +56,14 @@ if (!$condamnation) {
 // Récupérer les remises de peine
 $remises = $condamnationMgr->getRemises($condamnationId);
 $totalRemises = array_sum(array_column($remises, 'jours_remis'));
+
+// Calculs explicites pour affichage: dates avec et sans remises
+$dateLiberationTheorique = $condamnation['date_liberation_theorique'];
+$joursDP = (int)$condamnation['jours_detention_provisoire_total'];
+$dateSansRemises = $dateLiberationTheorique
+    ? date('Y-m-d', strtotime($dateLiberationTheorique . " -{$joursDP} days"))
+    : null;
+$dateAvecRemises = $condamnation['date_liberation_effective']; // déjà inclus DP + remises
 ?>
 <!DOCTYPE html>
 <html lang="fr">
@@ -157,6 +189,15 @@ $totalRemises = array_sum(array_column($remises, 'jours_remis'));
                             class="btn btn-success me-2">
                             <i class="fas fa-gift me-2"></i>Ajouter Remise
                         </a>
+                        <?php if ($role === 'ADMIN'): ?>
+                        <form method="POST" class="d-inline">
+                            <?= CSRF::field() ?>
+                            <input type="hidden" name="action" value="recalc">
+                            <button type="submit" class="btn btn-info me-2">
+                                <i class="fas fa-sync-alt me-2"></i>Recalculer Libération
+                            </button>
+                        </form>
+                        <?php endif; ?>
                         <?php endif; ?>
                         <a href="condamnations.php" class="btn btn-secondary">
                             <i class="fas fa-arrow-left me-2"></i>Retour

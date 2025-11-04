@@ -1,16 +1,14 @@
 <?php
-session_start();
-if (!isset($_SESSION['user_id'])) {
-    header('Location: ../../index.php');
-    exit();
-}
-
 require_once '../../includes/db.php';
 require_once '../../includes/classes/autoload.php';
+require_once '../../includes/auth.php';
+require_once '../../includes/csrf.php';
 require_once '../../includes/logs.php';
 
+Auth::requireAuth('../../index.php');
+
 $stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
-$stmt->execute([$_SESSION['user_id']]);
+$stmt->execute([Auth::id()]);
 $user = $stmt->fetch();
 $name = $user ? htmlspecialchars($user['nom'] . ' ' . $user['prenom']) : '';
 
@@ -20,6 +18,7 @@ $refMgr = new ReferenceManager($pdo);
 
 $errors = [];
 $success = '';
+$mode = $_POST['mode'] ?? 'CONVERSION'; // CONVERSION (par défaut) ou DIRECTE
 
 // Détenu pré-sélectionné ?
 $detenuId = isset($_GET['detenu_id']) ? (int)$_GET['detenu_id'] : null;
@@ -29,11 +28,19 @@ if ($detenuId) {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    try { CSRF::verify(); } catch (Exception $e) { $errors[] = 'Session expirée. Veuillez recharger la page.'; }
     // Validation
     $required = ['numero_dossier', 'detenu_id', 'infraction_id', 'date_jugement', 'peine_valeur', 'peine_unite'];
     foreach ($required as $field) {
         if (empty($_POST[$field])) {
             $errors[] = "Le champ " . str_replace('_', ' ', ucfirst($field)) . " est obligatoire.";
+        }
+    }
+
+    // Spécifique au mode DIRECTE: lieu obligatoire, pas d'OIP/mandat requis
+    if (($_POST['mode'] ?? '') === 'DIRECTE') {
+        if (empty($_POST['lieu_detention_id'])) {
+            $errors[] = "Le lieu de détention est obligatoire en condamnation directe.";
         }
     }
 
@@ -59,26 +66,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'infraction_details' => trim($_POST['infraction_details']) ?: null,
             'date_infraction' => $_POST['date_infraction'] ?: null,
             'lieu_infraction' => trim($_POST['lieu_infraction']) ?: null,
-            'date_oip' => $_POST['date_oip'] ?: null,
-            'date_omlp' => $_POST['date_omlp'] ?: null,
+            'date_oip' => ($_POST['mode'] ?? '') === 'DIRECTE' ? null : ($_POST['date_oip'] ?: null),
+            'date_omlp' => ($_POST['mode'] ?? '') === 'DIRECTE' ? null : ($_POST['date_omlp'] ?: null),
             'date_jugement' => $_POST['date_jugement'],
             'numero_jugement' => trim($_POST['numero_jugement']) ?: null,
             'tribunal' => trim($_POST['tribunal']) ?: null,
-            'date_mandat_depot' => $_POST['date_mandat_depot'] ?: null,
-            'date_liberation_mandat' => $_POST['date_liberation_mandat'] ?: null,
+            'date_mandat_depot' => ($_POST['mode'] ?? '') === 'DIRECTE' ? null : ($_POST['date_mandat_depot'] ?: null),
+            'date_liberation_mandat' => ($_POST['mode'] ?? '') === 'DIRECTE' ? null : ($_POST['date_liberation_mandat'] ?: null),
             'peine_valeur' => (int)$_POST['peine_valeur'],
             'peine_unite' => $_POST['peine_unite'],
             'lieu_detention_id' => !empty($_POST['lieu_detention_id']) ? (int)$_POST['lieu_detention_id'] : null,
-            'date_debut_execution' => $_POST['date_debut_execution'] ?: null,
-            'observations' => trim($_POST['observations']) ?: null,
+            'date_debut_execution' => (($_POST['mode'] ?? '') === 'DIRECTE')
+                ? ($_POST['date_jugement'] ?: null)
+                : ($_POST['date_debut_execution'] ?: null),
+            'observations' => trim($_POST['observations'])
+                ?: (($_POST['mode'] ?? '') === 'DIRECTE' ? 'CONDAMNATION DIRECTE (sans detention provisoire prealable)' : null),
             'statut' => 'EN_COURS',
             'is_principale' => isset($_POST['is_principale']) ? true : false
         ];
 
-        $condamnationId = $condamnationMgr->create($data, $_SESSION['user_id']);
+        $condamnationId = $condamnationMgr->create($data, Auth::id());
 
         if ($condamnationId) {
-            log_activity($pdo, $_SESSION['user_id'], 'Ajout condamnation', "Nouvelle condamnation ID: $condamnationId");
+            log_activity($pdo, Auth::id(), 'Ajout condamnation', "Nouvelle condamnation ID: $condamnationId");
             $success = "Condamnation ajoutée avec succès ! Les dates de libération ont été calculées automatiquement.";
             header("refresh:2;url=voir_condamnation.php?id=$condamnationId");
         } else {
@@ -88,7 +98,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // Données pour les selects
-$detenus = $detenuMgr->getAll(['statut' => 'DETENTION_PROVISOIRE']);
+$detenus = ($mode === 'DIRECTE')
+    ? $detenuMgr->getAll([])
+    : $detenuMgr->getAll(['statut' => 'DETENTION_PROVISOIRE']);
 $infractions = $refMgr->getAllInfractions();
 $lieux = $refMgr->getAllLieuxDetention();
 ?>
@@ -147,6 +159,19 @@ $lieux = $refMgr->getAllLieuxDetention();
                     <?php endif; ?>
 
                     <form method="POST">
+                        <?= CSRF::field() ?>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold">Mode de création</label>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="mode" id="mode_conversion" value="CONVERSION" <?= $mode !== 'DIRECTE' ? 'checked' : '' ?>>
+                                <label class="form-check-label" for="mode_conversion">Conversion DP → Condamnation (avec déduction)</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="mode" id="mode_directe" value="DIRECTE" <?= $mode === 'DIRECTE' ? 'checked' : '' ?>>
+                                <label class="form-check-label" for="mode_directe">Condamnation directe (sans DP, 0 jour déduit)</label>
+                            </div>
+                            <small class="text-muted">Changer le mode peut modifier les champs requis.</small>
+                        </div>
                         <div class="row">
                             <!-- Informations de base -->
                             <div class="col-lg-6">
@@ -179,8 +204,10 @@ $lieux = $refMgr->getAllLieuxDetention();
                                                 </option>
                                                 <?php endforeach; ?>
                                             </select>
-                                            <small class="text-muted">Seuls les détenus en détention provisoire sont
-                                                affichés</small>
+                                            <small class="text-muted">
+                                                <?= $mode === 'DIRECTE' ? 'Tous les détenus actifs' : 'Seuls les détenus en détention provisoire' ?>
+                                                sont affichés
+                                            </small>
                                         </div>
 
                                         <div class="mb-3">
@@ -237,7 +264,7 @@ $lieux = $refMgr->getAllLieuxDetention();
                                         </h4>
                                     </div>
                                     <div class="card-body">
-                                        <div class="row">
+                                        <div class="row dp-only">
                                             <div class="col-md-6 mb-3">
                                                 <label class="form-label">Date OIP</label>
                                                 <input type="date" name="date_oip" class="form-control"
@@ -252,7 +279,7 @@ $lieux = $refMgr->getAllLieuxDetention();
                                             </div>
                                         </div>
 
-                                        <div class="row">
+                                        <div class="row dp-only">
                                             <div class="col-md-6 mb-3">
                                                 <label class="form-label">Date Mandat de Dépôt</label>
                                                 <input type="date" name="date_mandat_depot" class="form-control"
@@ -265,9 +292,13 @@ $lieux = $refMgr->getAllLieuxDetention();
                                             </div>
                                         </div>
 
-                                        <div class="alert alert-info">
+                                        <div class="alert alert-info dp-only">
                                             <i class="fas fa-info-circle me-2"></i>
                                             Les jours de détention provisoire seront automatiquement déduits de la peine
+                                        </div>
+                                        <div class="alert alert-warning direct-only" style="display:none;">
+                                            <i class="fas fa-info-circle me-2"></i>
+                                            Condamnation directe: pas de détention provisoire, 0 jour déduit. La date de début d'exécution sera celle du jugement.
                                         </div>
                                     </div>
                                 </div>
@@ -362,10 +393,10 @@ $lieux = $refMgr->getAllLieuxDetention();
                                             </select>
                                         </div>
 
-                                        <div class="mb-3">
-                                            <label class="form-label">Date Début Exécution</label>
-                                            <input type="date" name="date_debut_execution" class="form-control"
-                                                value="<?= htmlspecialchars($_POST['date_debut_execution'] ?? '') ?>">
+                                        <div class="mb-3 direct-only" style="display:none;">
+                                            <label class="form-label">Date Début Exécution (auto)</label>
+                                            <input type="date" class="form-control" value="<?= htmlspecialchars($_POST['date_jugement'] ?? '') ?>" disabled>
+                                            <small class="text-muted">En condamnation directe, la date de début = date du jugement.</small>
                                         </div>
 
                                         <div class="mb-3">
@@ -409,6 +440,24 @@ $lieux = $refMgr->getAllLieuxDetention();
     <?php include '../../requires/script.php'; ?>
     <script>
     $(document).ready(function() {
+        function syncModeUI() {
+            const mode = $('input[name="mode"]:checked').val();
+            if (mode === 'DIRECTE') {
+                $('.dp-only').hide();
+                $('.direct-only').show();
+            } else {
+                $('.dp-only').show();
+                $('.direct-only').hide();
+            }
+        }
+
+        $('input[name="mode"]').on('change', function() {
+            syncModeUI();
+            // Optionnel: soumettre pour rafraîchir la liste des détenus
+            // $(this).closest('form').submit();
+        });
+
+        syncModeUI();
         // Info détenu sélectionné
         $('#detenu-select').change(function() {
             var option = $(this).find('option:selected');

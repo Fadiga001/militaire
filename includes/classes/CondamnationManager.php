@@ -309,6 +309,25 @@ class CondamnationManager
             // Recalculer la date de libération
             $this->recalculerDateLiberation($condamnationId);
 
+            // Logger le recalcul (audit)
+            $calcStmt = $this->pdo->prepare("\n                SELECT \n                    c.id,\n                    c.date_liberation_theorique,\n                    c.date_liberation_effective,\n                    c.jours_detention_provisoire_total,\n                    (SELECT COALESCE(SUM(jours_remis), 0) FROM remises_peine WHERE condamnation_id = c.id) AS total_remises\n                FROM condamnations c\n                WHERE c.id = :id\n            ");
+            $calcStmt->execute([':id' => $condamnationId]);
+            $calc = $calcStmt->fetch();
+
+            if ($calc) {
+                $audit = $this->pdo->prepare("\n                    INSERT INTO audit_logs (user_id, action, entity_type, entity_id, new_values)\n                    VALUES (:user_id, 'RECALCUL_LIBERATION', 'CONDAMNATION', :entity_id, :payload)\n                ");
+                $audit->execute([
+                    ':user_id' => $userId,
+                    ':entity_id' => $condamnationId,
+                    ':payload' => json_encode([
+                        'date_liberation_theorique' => $calc['date_liberation_theorique'],
+                        'jours_dp' => (int)$calc['jours_detention_provisoire_total'],
+                        'total_remises' => (int)$calc['total_remises'],
+                        'date_liberation_effective' => $calc['date_liberation_effective'],
+                    ], JSON_UNESCAPED_UNICODE)
+                ]);
+            }
+
             return $remiseId;
         } catch (PDOException $e) {
             error_log("Erreur ajout remise: " . $e->getMessage());

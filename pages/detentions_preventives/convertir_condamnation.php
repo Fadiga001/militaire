@@ -1,17 +1,14 @@
 <?php
-session_start();
-if (!isset($_SESSION['user_id'])) {
-    header('Location: ../../index.php');
-    exit();
-}
-
 require_once '../../includes/db.php';
 require_once '../../includes/classes/autoload.php';
+require_once '../../includes/auth.php';
 require_once '../../includes/csrf.php';
 require_once '../../includes/validator.php';
 
+Auth::requireAuth('../../index.php');
+
 $stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
-$stmt->execute([$_SESSION['user_id']]);
+$stmt->execute([Auth::id()]);
 $user = $stmt->fetch();
 $name = $user ? htmlspecialchars($user['nom'] . ' ' . $user['prenom']) : '';
 $role = $user['role'] ?? '';
@@ -57,7 +54,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'tribunal' => $_POST['tribunal'] ?? null,
                 'peine_valeur' => (int)$validated['peine_valeur'],
                 'peine_unite' => $validated['peine_unite']
-            ], $_SESSION['user_id']);
+            ], Auth::id());
 
             if ($condamnationId) {
                 $_SESSION['success_message'] = "Condamnation créée avec succès. Le détenu passe en statut CONDAMNÉ.";

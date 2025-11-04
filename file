@@ -1,11 +1,11 @@
 -- phpMyAdmin SQL Dump
--- version 5.2.0
+-- version 5.2.1
 -- https://www.phpmyadmin.net/
 --
--- Hôte : 127.0.0.1:3306
--- Généré le : sam. 01 nov. 2025 à 10:31
--- Version du serveur : 8.0.31
--- Version de PHP : 8.0.26
+-- Hôte : 127.0.0.1
+-- Généré le : mar. 04 nov. 2025 à 12:55
+-- Version du serveur : 10.4.32-MariaDB
+-- Version de PHP : 8.2.12
 
 SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
 START TRANSACTION;
@@ -25,7 +25,6 @@ DELIMITER $$
 --
 -- Procédures
 --
-DROP PROCEDURE IF EXISTS `sp_convertir_en_condamnation`$$
 CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_convertir_en_condamnation` (IN `p_detention_id` INT, IN `p_date_jugement` DATE, IN `p_numero_jugement` VARCHAR(100), IN `p_tribunal` VARCHAR(255), IN `p_peine_valeur` INT, IN `p_peine_unite` ENUM('JOUR','MOIS','ANNEE'), IN `p_user_id` INT)   BEGIN
     DECLARE v_detenu_id INT;
     DECLARE v_infraction_id INT;
@@ -157,7 +156,128 @@ CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_convertir_en_condamnation` (IN `
         DATE_FORMAT(p_date_jugement, '%d/%m/%Y') AS date_jugement;
 END$$
 
-DROP PROCEDURE IF EXISTS `sp_generer_notifications`$$
+CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_creer_condamnation_directe` (IN `p_detenu_id` INT, IN `p_numero_dossier` VARCHAR(50), IN `p_infraction_id` INT, IN `p_date_jugement` DATE, IN `p_numero_jugement` VARCHAR(100), IN `p_tribunal` VARCHAR(255), IN `p_peine_valeur` INT, IN `p_peine_unite` ENUM('JOUR','MOIS','ANNEE'), IN `p_lieu_detention_id` INT, IN `p_user_id` INT)   BEGIN
+    DECLARE v_condamnation_id INT;
+    DECLARE v_nom_detenu VARCHAR(355);
+    DECLARE v_statut_actuel VARCHAR(50);
+    
+    START TRANSACTION;
+    
+    -- Vérifier que le détenu existe
+    SELECT nom_complet, statut_actuel
+    INTO v_nom_detenu, v_statut_actuel
+    FROM detenus
+    WHERE id = p_detenu_id
+      AND is_deleted = FALSE;
+    
+    IF v_nom_detenu IS NULL THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Detenu non trouve';
+    END IF;
+    
+    -- Vérifier que le numéro de dossier n'existe pas déjà
+    IF EXISTS (SELECT 1 FROM condamnations WHERE numero_dossier = p_numero_dossier) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Numero de dossier deja existant dans les condamnations';
+    END IF;
+    
+    IF EXISTS (SELECT 1 FROM detentions_provisoires WHERE numero_dossier = p_numero_dossier) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Numero de dossier deja existant dans les detentions provisoires';
+    END IF;
+    
+    -- Créer la condamnation DIRECTEMENT
+    INSERT INTO condamnations (
+        numero_dossier,
+        detenu_id,
+        infraction_id,
+        date_jugement,
+        numero_jugement,
+        tribunal,
+        peine_valeur,
+        peine_unite,
+        lieu_detention_id,
+        date_debut_execution,
+        statut,
+        observations,
+        created_by
+    ) VALUES (
+        p_numero_dossier,
+        p_detenu_id,
+        p_infraction_id,
+        p_date_jugement,
+        p_numero_jugement,
+        p_tribunal,
+        p_peine_valeur,
+        p_peine_unite,
+        p_lieu_detention_id,
+        p_date_jugement,
+        'EN_COURS',
+        CONCAT('CONDAMNATION DIRECTE (sans detention provisoire prealable)\n',
+               'Juge le ', DATE_FORMAT(p_date_jugement, '%d/%m/%Y'), '\n',
+               'Pas de detention provisoire - Execution immediate de la peine'),
+        p_user_id
+    );
+    
+    SET v_condamnation_id = LAST_INSERT_ID();
+    
+    -- Mettre à jour le statut du détenu
+    UPDATE detenus
+    SET statut_actuel = 'CONDAMNE',
+        nombre_condamnations = nombre_condamnations + 1,
+        is_multrecidiviste = (nombre_condamnations + 1 > 1),
+        date_changement_statut = NOW(),
+        updated_by = p_user_id
+    WHERE id = p_detenu_id;
+    
+    -- Créer la période d'exécution
+    INSERT INTO periodes_detention (
+        detenu_id,
+        condamnation_id,
+        type,
+        motif,
+        date_debut,
+        lieu_detention_id,
+        observations,
+        created_by
+    ) VALUES (
+        p_detenu_id,
+        v_condamnation_id,
+        'EXECUTION_PEINE',
+        'Execution de peine - Condamnation directe',
+        p_date_jugement,
+        p_lieu_detention_id,
+        'Aucune detention provisoire prealable',
+        p_user_id
+    );
+    
+    -- Log d'audit
+    INSERT INTO audit_logs (user_id, action, entity_type, entity_id, new_values)
+    VALUES (
+        p_user_id,
+        'CONDAMNATION_DIRECTE',
+        'CONDAMNATION',
+        v_condamnation_id,
+        JSON_OBJECT(
+            'detenu', v_nom_detenu,
+            'dossier', p_numero_dossier,
+            'peine', CONCAT(p_peine_valeur, ' ', p_peine_unite),
+            'detention_provisoire', 'NON'
+        )
+    );
+    
+    COMMIT;
+    
+    SELECT 
+        'CONDAMNATION DIRECTE CREEE' AS message,
+        v_condamnation_id AS condamnation_id,
+        p_numero_dossier AS numero_dossier,
+        v_nom_detenu AS detenu,
+        CONCAT(p_peine_valeur, ' ', p_peine_unite) AS peine,
+        0 AS jours_detention_provisoire,
+        'Aucune detention provisoire prealable' AS note;
+END$$
+
 CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_generer_notifications` ()   BEGIN
     DECLARE v_date_limite DATE;
     SET v_date_limite = DATE_SUB(NOW(), INTERVAL 30 DAY);
@@ -193,7 +313,6 @@ CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_generer_notifications` ()   BEGI
       );
 END$$
 
-DROP PROCEDURE IF EXISTS `sp_liberer_condamne`$$
 CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_liberer_condamne` (IN `p_condamnation_id` INT, IN `p_user_id` INT, IN `p_motif` VARCHAR(255))   BEGIN
     DECLARE v_detenu_id INT;
     
@@ -228,7 +347,6 @@ CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_liberer_condamne` (IN `p_condamn
     COMMIT;
 END$$
 
-DROP PROCEDURE IF EXISTS `sp_liberer_detention_preventive`$$
 CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_liberer_detention_preventive` (IN `p_condamnation_id` INT, IN `p_user_id` INT, IN `p_motif` VARCHAR(255))   BEGIN
     DECLARE v_detenu_id INT;
     DECLARE v_date_limite DATE;
@@ -301,7 +419,6 @@ CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_liberer_detention_preventive` (I
     SELECT 'Détenu libéré avec succès' AS Message;
 END$$
 
-DROP PROCEDURE IF EXISTS `sp_liberer_detention_provisoire`$$
 CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_liberer_detention_provisoire` (IN `p_detention_id` INT, IN `p_user_id` INT, IN `p_motif` TEXT)   BEGIN
     DECLARE v_detenu_id INT;
     DECLARE v_date_limite DATE;
@@ -370,7 +487,6 @@ CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_liberer_detention_provisoire` (I
         DATE_FORMAT(CURDATE(), '%d/%m/%Y') AS date_liberation;
 END$$
 
-DROP PROCEDURE IF EXISTS `sp_verifier_detentions_preventives`$$
 CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_verifier_detentions_preventives` ()   BEGIN
     DECLARE done INT DEFAULT FALSE;
     DECLARE v_condamnation_id INT;
@@ -427,7 +543,6 @@ CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_verifier_detentions_preventives`
       AND is_deleted = FALSE;
 END$$
 
-DROP PROCEDURE IF EXISTS `sp_verifier_detentions_provisoires`$$
 CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_verifier_detentions_provisoires` ()   BEGIN
     -- Générer des notifications pour les détentions critiques
     INSERT INTO notifications (
@@ -487,8 +602,7 @@ END$$
 --
 -- Fonctions
 --
-DROP FUNCTION IF EXISTS `fn_jours_restants_detention_preventive`$$
-CREATE DEFINER=`root`@`localhost` FUNCTION `fn_jours_restants_detention_preventive` (`p_condamnation_id` INT) RETURNS INT DETERMINISTIC BEGIN
+CREATE DEFINER=`root`@`localhost` FUNCTION `fn_jours_restants_detention_preventive` (`p_condamnation_id` INT) RETURNS INT(11) DETERMINISTIC BEGIN
     DECLARE v_jours INT;
     
     SELECT DATEDIFF(date_limite_detention_preventive, NOW())
@@ -508,32 +622,35 @@ DELIMITER ;
 -- Structure de la table `audit_logs`
 --
 
-DROP TABLE IF EXISTS `audit_logs`;
-CREATE TABLE IF NOT EXISTS `audit_logs` (
-  `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT,
-  `user_id` int UNSIGNED DEFAULT NULL,
-  `username` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `action` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `entity_type` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `entity_id` int UNSIGNED DEFAULT NULL,
-  `old_values` json DEFAULT NULL,
-  `new_values` json DEFAULT NULL,
-  `ip_address` varchar(45) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `user_agent` text COLLATE utf8mb4_unicode_ci,
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `idx_user` (`user_id`),
-  KEY `idx_action` (`action`),
-  KEY `idx_entity` (`entity_type`,`entity_id`),
-  KEY `idx_date` (`created_at`)
-) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE TABLE `audit_logs` (
+  `id` bigint(20) UNSIGNED NOT NULL,
+  `user_id` int(10) UNSIGNED DEFAULT NULL,
+  `username` varchar(50) DEFAULT NULL,
+  `action` varchar(50) NOT NULL,
+  `entity_type` varchar(50) DEFAULT NULL,
+  `entity_id` int(10) UNSIGNED DEFAULT NULL,
+  `old_values` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`old_values`)),
+  `new_values` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`new_values`)),
+  `ip_address` varchar(45) DEFAULT NULL,
+  `user_agent` text DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 --
 -- Déchargement des données de la table `audit_logs`
 --
 
 INSERT INTO `audit_logs` (`id`, `user_id`, `username`, `action`, `entity_type`, `entity_id`, `old_values`, `new_values`, `ip_address`, `user_agent`, `created_at`) VALUES
-(1, 1, NULL, 'CONVERSION_CONDAMNATION', 'DETENTION_PROVISOIRE', 1, NULL, '{\"condamnation_id\": 2, \"jours_detention_provisoire\": 16}', NULL, NULL, '2025-11-01 10:06:51');
+(1, 1, NULL, 'CONVERSION_CONDAMNATION', 'DETENTION_PROVISOIRE', 1, NULL, '{\"condamnation_id\": 2, \"jours_detention_provisoire\": 16}', NULL, NULL, '2025-11-01 10:06:51'),
+(2, 1, NULL, 'RECALCUL_LIBERATION_FORCE', 'CONDAMNATION', 3, NULL, '{\"source\":\"voir_condamnation.php\"}', NULL, NULL, '2025-11-04 11:52:11'),
+(3, 1, NULL, 'RECALCUL_LIBERATION', 'CONDAMNATION', 3, NULL, '{\"date_liberation_theorique\":\"2030-02-03\",\"jours_dp\":0,\"total_remises\":25,\"date_liberation_effective\":\"2030-02-03\"}', NULL, NULL, '2025-11-04 11:54:12'),
+(4, 1, NULL, 'RECALCUL_LIBERATION_FORCE', 'CONDAMNATION', 3, NULL, '{\"source\":\"voir_condamnation.php\"}', NULL, NULL, '2025-11-04 11:54:18'),
+(5, 1, NULL, 'RECALCUL_LIBERATION_FORCE', 'CONDAMNATION', 3, NULL, '{\"source\":\"voir_condamnation.php\"}', NULL, NULL, '2025-11-04 11:54:20'),
+(6, 1, NULL, 'RECALCUL_LIBERATION_FORCE', 'CONDAMNATION', 3, NULL, '{\"source\":\"voir_condamnation.php\"}', NULL, NULL, '2025-11-04 11:54:21'),
+(7, 1, NULL, 'RECALCUL_LIBERATION_FORCE', 'CONDAMNATION', 3, NULL, '{\"source\":\"voir_condamnation.php\"}', NULL, NULL, '2025-11-04 11:54:21'),
+(8, 1, NULL, 'RECALCUL_LIBERATION_FORCE', 'CONDAMNATION', 3, NULL, '{\"source\":\"voir_condamnation.php\"}', NULL, NULL, '2025-11-04 11:54:21'),
+(9, 1, NULL, 'RECALCUL_LIBERATION_FORCE', 'CONDAMNATION', 3, NULL, '{\"source\":\"voir_condamnation.php\"}', NULL, NULL, '2025-11-04 11:54:21'),
+(10, 1, NULL, 'RECALCUL_LIBERATION_FORCE', 'CONDAMNATION', 3, NULL, '{\"source\":\"voir_condamnation.php\"}', NULL, NULL, '2025-11-04 11:54:22');
 
 -- --------------------------------------------------------
 
@@ -541,64 +658,49 @@ INSERT INTO `audit_logs` (`id`, `user_id`, `username`, `action`, `entity_type`, 
 -- Structure de la table `condamnations`
 --
 
-DROP TABLE IF EXISTS `condamnations`;
-CREATE TABLE IF NOT EXISTS `condamnations` (
-  `id` int UNSIGNED NOT NULL AUTO_INCREMENT,
-  `numero_dossier` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `detenu_id` int UNSIGNED NOT NULL,
-  `infraction_id` int UNSIGNED NOT NULL,
-  `infraction_details` text COLLATE utf8mb4_unicode_ci COMMENT 'Détails spécifiques',
+CREATE TABLE `condamnations` (
+  `id` int(10) UNSIGNED NOT NULL,
+  `numero_dossier` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `detenu_id` int(10) UNSIGNED NOT NULL,
+  `infraction_id` int(10) UNSIGNED NOT NULL,
+  `infraction_details` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Détails spécifiques',
   `date_infraction` date DEFAULT NULL,
-  `lieu_infraction` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `lieu_infraction` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `date_oip` date DEFAULT NULL COMMENT 'Ouverture Information Préliminaire',
   `date_omlp` date DEFAULT NULL COMMENT 'Ordonnance Mise en Liberté Provisoire',
   `date_jugement` date DEFAULT NULL,
-  `numero_jugement` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `tribunal` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `numero_jugement` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `tribunal` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `date_mandat_depot` date DEFAULT NULL,
   `date_liberation_mandat` date DEFAULT NULL,
-  `peine_valeur` int DEFAULT NULL,
+  `peine_valeur` int(11) DEFAULT NULL,
   `peine_unite` enum('JOUR','MOIS','ANNEE') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT 'ANNEE',
-  `peine_jours_total` int GENERATED ALWAYS AS ((case `peine_unite` when _utf8mb4'JOUR' then `peine_valeur` when _utf8mb4'MOIS' then (`peine_valeur` * 30) when _utf8mb4'ANNEE' then (`peine_valeur` * 365) end)) STORED,
+  `peine_jours_total` int(11) GENERATED ALWAYS AS (case `peine_unite` when _utf8mb4'JOUR' then `peine_valeur` when _utf8mb4'MOIS' then `peine_valeur` * 30 when _utf8mb4'ANNEE' then `peine_valeur` * 365 end) STORED,
   `date_liberation_theorique` date DEFAULT NULL,
   `date_liberation_effective` date DEFAULT NULL,
-  `jours_detention_provisoire_oip` int DEFAULT '0',
-  `jours_detention_provisoire_mandat` int DEFAULT '0',
-  `jours_detention_provisoire_total` int GENERATED ALWAYS AS ((`jours_detention_provisoire_oip` + `jours_detention_provisoire_mandat`)) STORED,
-  `lieu_detention_id` int UNSIGNED DEFAULT NULL,
+  `jours_detention_provisoire_oip` int(11) DEFAULT 0,
+  `jours_detention_provisoire_mandat` int(11) DEFAULT 0,
+  `jours_detention_provisoire_total` int(11) GENERATED ALWAYS AS (`jours_detention_provisoire_oip` + `jours_detention_provisoire_mandat`) STORED,
+  `lieu_detention_id` int(10) UNSIGNED DEFAULT NULL,
   `date_debut_execution` date DEFAULT NULL,
   `date_liberation_reelle` date DEFAULT NULL,
-  `motif_liberation` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `statut` enum('EN_COURS','TERMINEE','SUSPENDUE','ANNULEE') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'EN_COURS',
-  `is_principale` tinyint(1) DEFAULT '1',
-  `observations` text COLLATE utf8mb4_unicode_ci,
-  `is_active` tinyint(1) DEFAULT '1',
-  `is_deleted` tinyint(1) DEFAULT '0',
+  `motif_liberation` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `statut` enum('EN_COURS','TERMINEE','SUSPENDUE','ANNULEE') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'EN_COURS',
+  `is_principale` tinyint(1) DEFAULT 1,
+  `observations` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `is_active` tinyint(1) DEFAULT 1,
+  `is_deleted` tinyint(1) DEFAULT 0,
   `deleted_at` timestamp NULL DEFAULT NULL,
-  `deleted_by` int UNSIGNED DEFAULT NULL,
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `created_by` int UNSIGNED DEFAULT NULL,
-  `updated_by` int UNSIGNED DEFAULT NULL,
-  `duree_max_detention_preventive_mois` int DEFAULT NULL COMMENT 'Durée max selon infraction (18 ou 24 mois)',
+  `deleted_by` int(10) UNSIGNED DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `created_by` int(10) UNSIGNED DEFAULT NULL,
+  `updated_by` int(10) UNSIGNED DEFAULT NULL,
+  `duree_max_detention_preventive_mois` int(11) DEFAULT NULL COMMENT 'Durée max selon infraction (18 ou 24 mois)',
   `date_limite_detention_preventive` date DEFAULT NULL COMMENT 'Date limite calculée',
-  `est_en_detention_preventive` tinyint(1) DEFAULT '0',
-  `alerte_detention_preventive` enum('NORMAL','ATTENTION','URGENT','DEPASSEE') COLLATE utf8mb4_unicode_ci DEFAULT 'NORMAL',
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `numero_dossier` (`numero_dossier`),
-  KEY `created_by` (`created_by`),
-  KEY `updated_by` (`updated_by`),
-  KEY `deleted_by` (`deleted_by`),
-  KEY `idx_numero_dossier` (`numero_dossier`),
-  KEY `idx_detenu` (`detenu_id`),
-  KEY `idx_infraction` (`infraction_id`),
-  KEY `idx_date_jugement` (`date_jugement`),
-  KEY `idx_statut` (`statut`),
-  KEY `idx_lieu` (`lieu_detention_id`),
-  KEY `idx_deleted` (`is_deleted`),
-  KEY `idx_liberation_effective` (`date_liberation_effective`),
-  KEY `idx_detention_preventive` (`est_en_detention_preventive`,`date_limite_detention_preventive`)
-) ;
+  `est_en_detention_preventive` tinyint(1) DEFAULT 0,
+  `alerte_detention_preventive` enum('NORMAL','ATTENTION','URGENT','DEPASSEE') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT 'NORMAL'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Déchargement des données de la table `condamnations`
@@ -606,12 +708,12 @@ CREATE TABLE IF NOT EXISTS `condamnations` (
 
 INSERT INTO `condamnations` (`id`, `numero_dossier`, `detenu_id`, `infraction_id`, `infraction_details`, `date_infraction`, `lieu_infraction`, `date_oip`, `date_omlp`, `date_jugement`, `numero_jugement`, `tribunal`, `date_mandat_depot`, `date_liberation_mandat`, `peine_valeur`, `peine_unite`, `date_liberation_theorique`, `date_liberation_effective`, `jours_detention_provisoire_oip`, `jours_detention_provisoire_mandat`, `lieu_detention_id`, `date_debut_execution`, `date_liberation_reelle`, `motif_liberation`, `statut`, `is_principale`, `observations`, `is_active`, `is_deleted`, `deleted_at`, `deleted_by`, `created_at`, `updated_at`, `created_by`, `updated_by`, `duree_max_detention_preventive_mois`, `date_limite_detention_preventive`, `est_en_detention_preventive`, `alerte_detention_preventive`) VALUES
 (1, 'DOS-2025-001', 1, 1, 'Jugé', '2025-04-26', 'ABIDJAN', '2025-08-01', '2025-08-31', '2025-10-31', NULL, 'Tribunal Militaire d\'Abidjan', '2025-09-01', '2025-10-15', 15, 'ANNEE', '2040-10-27', '2040-10-27', 30, 44, 1, '2025-10-31', '2025-11-01', 'Grâce présidentielle', 'TERMINEE', 1, 'Jugé ok', 1, 0, NULL, NULL, '2025-10-31 23:15:36', '2025-11-01 10:29:58', 1, 1, NULL, NULL, 0, 'NORMAL'),
-(2, 'DP-2025-', 2, 1, NULL, NULL, NULL, NULL, NULL, '2025-11-01', '001', 'Tribunal Militaire', NULL, NULL, 5, 'ANNEE', NULL, NULL, 0, 0, 1, '2025-11-01', NULL, NULL, 'EN_COURS', 1, NULL, 1, 0, NULL, NULL, '2025-11-01 10:06:51', '2025-11-01 10:06:51', 1, NULL, 24, NULL, 1, 'NORMAL');
+(2, 'DP-2025-002', 2, 1, NULL, NULL, NULL, NULL, NULL, '2025-11-01', '001', 'Tribunal Militaire', NULL, NULL, 5, 'ANNEE', '2030-10-31', '2030-10-31', 0, 0, 1, '2025-11-01', NULL, NULL, 'EN_COURS', 1, NULL, 1, 0, NULL, NULL, '2025-11-01 10:06:51', '2025-11-01 13:15:39', 1, 1, 24, NULL, 1, 'NORMAL'),
+(3, 'DOS-2025-005', 5, 5, 'Braquage', '2025-01-01', 'ABIDJAN', NULL, NULL, '2025-02-04', NULL, 'TRIBUNAL MILITAIRE D\'ABIDJAN', NULL, NULL, 5, 'ANNEE', '2030-02-03', '2030-02-03', 0, 0, 1, '2025-02-04', NULL, NULL, 'EN_COURS', 1, 'CONDAMNE', 1, 0, NULL, NULL, '2025-11-04 11:51:55', '2025-11-04 11:51:55', 1, NULL, 18, NULL, 1, 'NORMAL');
 
 --
 -- Déclencheurs `condamnations`
 --
-DROP TRIGGER IF EXISTS `trg_condamnation_after_insert`;
 DELIMITER $$
 CREATE TRIGGER `trg_condamnation_after_insert` AFTER INSERT ON `condamnations` FOR EACH ROW BEGIN
     UPDATE detenus 
@@ -622,7 +724,6 @@ CREATE TRIGGER `trg_condamnation_after_insert` AFTER INSERT ON `condamnations` F
 END
 $$
 DELIMITER ;
-DROP TRIGGER IF EXISTS `trg_condamnation_before_insert`;
 DELIMITER $$
 CREATE TRIGGER `trg_condamnation_before_insert` BEFORE INSERT ON `condamnations` FOR EACH ROW BEGIN
     DECLARE v_categorie VARCHAR(20);
@@ -661,7 +762,36 @@ CREATE TRIGGER `trg_condamnation_before_insert` BEFORE INSERT ON `condamnations`
 END
 $$
 DELIMITER ;
-DROP TRIGGER IF EXISTS `trg_condamnation_before_update`;
+DELIMITER $$
+CREATE TRIGGER `trg_condamnation_before_insert_compute` BEFORE INSERT ON `condamnations` FOR EACH ROW BEGIN
+  IF NEW.date_jugement IS NOT NULL AND NEW.peine_valeur > 0 THEN
+    SET NEW.date_liberation_theorique = DATE_ADD(
+      NEW.date_jugement,
+      INTERVAL (
+        CASE NEW.peine_unite
+          WHEN 'JOUR' THEN NEW.peine_valeur
+          WHEN 'MOIS' THEN NEW.peine_valeur * 30
+          WHEN 'ANNEE' THEN NEW.peine_valeur * 365
+        END
+      ) DAY
+    );
+
+    SET NEW.jours_detention_provisoire_oip = COALESCE(DATEDIFF(NEW.date_omlp, NEW.date_oip), 0);
+
+    IF NEW.date_mandat_depot IS NOT NULL THEN
+      SET NEW.jours_detention_provisoire_mandat = DATEDIFF(COALESCE(NEW.date_liberation_mandat, NEW.date_jugement), NEW.date_mandat_depot);
+    ELSE
+      SET NEW.jours_detention_provisoire_mandat = 0;
+    END IF;
+
+    SET NEW.date_liberation_effective = DATE_SUB(
+      NEW.date_liberation_theorique,
+      INTERVAL (NEW.jours_detention_provisoire_oip + NEW.jours_detention_provisoire_mandat) DAY
+    );
+  END IF;
+END
+$$
+DELIMITER ;
 DELIMITER $$
 CREATE TRIGGER `trg_condamnation_before_update` BEFORE UPDATE ON `condamnations` FOR EACH ROW BEGIN
     IF NEW.date_jugement IS NOT NULL AND NEW.peine_valeur > 0 THEN
@@ -695,7 +825,6 @@ CREATE TRIGGER `trg_condamnation_before_update` BEFORE UPDATE ON `condamnations`
 END
 $$
 DELIMITER ;
-DROP TRIGGER IF EXISTS `trg_condamnation_before_update_dp`;
 DELIMITER $$
 CREATE TRIGGER `trg_condamnation_before_update_dp` BEFORE UPDATE ON `condamnations` FOR EACH ROW BEGIN
     DECLARE v_categorie VARCHAR(20);
@@ -752,59 +881,39 @@ DELIMITER ;
 -- Structure de la table `detentions_provisoires`
 --
 
-DROP TABLE IF EXISTS `detentions_provisoires`;
-CREATE TABLE IF NOT EXISTS `detentions_provisoires` (
-  `id` int UNSIGNED NOT NULL AUTO_INCREMENT,
-  `numero_dossier` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `detenu_id` int UNSIGNED NOT NULL,
-  `infraction_presume_id` int UNSIGNED NOT NULL,
-  `infraction_details` text COLLATE utf8mb4_unicode_ci COMMENT 'Détails des faits reprochés',
+CREATE TABLE `detentions_provisoires` (
+  `id` int(10) UNSIGNED NOT NULL,
+  `numero_dossier` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `detenu_id` int(10) UNSIGNED NOT NULL,
+  `infraction_presume_id` int(10) UNSIGNED NOT NULL,
+  `infraction_details` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Détails des faits reprochés',
   `date_faits` date DEFAULT NULL COMMENT 'Date des faits reprochés',
-  `lieu_faits` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `lieu_faits` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `date_arrestation` date NOT NULL,
   `date_oip` date DEFAULT NULL COMMENT 'Ouverture Information Préliminaire',
   `date_mandat_depot` date DEFAULT NULL COMMENT 'Date du mandat de dépôt',
-  `numero_mandat` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `autorite_mandante` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Juge d''instruction, etc.',
-  `motif_detention` text COLLATE utf8mb4_unicode_ci,
-  `categorie_infraction` enum('CRIME','DELIT','CONTRAVENTION') COLLATE utf8mb4_unicode_ci NOT NULL,
-  `duree_max_mois` int NOT NULL COMMENT '24 pour crime, 18 pour délit',
+  `numero_mandat` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `autorite_mandante` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Juge d''instruction, etc.',
+  `motif_detention` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `categorie_infraction` enum('CRIME','DELIT','CONTRAVENTION') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `duree_max_mois` int(11) NOT NULL COMMENT '24 pour crime, 18 pour délit',
   `date_debut_detention` date NOT NULL,
   `date_limite_legale` date NOT NULL COMMENT 'Date max calculée automatiquement',
-  `lieu_detention_id` int UNSIGNED NOT NULL,
-  `statut` enum('EN_COURS','TERMINE_CONDAMNATION','TERMINE_LIBERATION','TERMINE_NON_LIEU') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'EN_COURS',
+  `lieu_detention_id` int(10) UNSIGNED NOT NULL,
+  `statut` enum('EN_COURS','TERMINE_CONDAMNATION','TERMINE_LIBERATION','TERMINE_NON_LIEU') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'EN_COURS',
   `date_fin` date DEFAULT NULL,
-  `motif_fin` text COLLATE utf8mb4_unicode_ci,
-  `condamnation_id` int UNSIGNED DEFAULT NULL COMMENT 'Si devenu condamnation',
-  `observations` text COLLATE utf8mb4_unicode_ci,
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `created_by` int UNSIGNED DEFAULT NULL,
-  `updated_by` int UNSIGNED DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `numero_dossier` (`numero_dossier`),
-  KEY `infraction_presume_id` (`infraction_presume_id`),
-  KEY `condamnation_id` (`condamnation_id`),
-  KEY `created_by` (`created_by`),
-  KEY `updated_by` (`updated_by`),
-  KEY `idx_numero_dossier` (`numero_dossier`),
-  KEY `idx_detenu` (`detenu_id`),
-  KEY `idx_statut` (`statut`),
-  KEY `idx_date_limite` (`date_limite_legale`),
-  KEY `idx_lieu` (`lieu_detention_id`)
-) ;
-
---
--- Déchargement des données de la table `detentions_provisoires`
---
-
-INSERT INTO `detentions_provisoires` (`id`, `numero_dossier`, `detenu_id`, `infraction_presume_id`, `infraction_details`, `date_faits`, `lieu_faits`, `date_arrestation`, `date_oip`, `date_mandat_depot`, `numero_mandat`, `autorite_mandante`, `motif_detention`, `categorie_infraction`, `duree_max_mois`, `date_debut_detention`, `date_limite_legale`, `lieu_detention_id`, `statut`, `date_fin`, `motif_fin`, `condamnation_id`, `observations`, `created_at`, `updated_at`, `created_by`, `updated_by`) VALUES
-(1, 'DP-2025-', 2, 1, 'Désertion', '2025-10-01', 'Abidjan', '2025-11-15', '0000-00-00', '2025-10-16', '001', 'Procureur', 'Preuve ', 'CRIME', 24, '2025-10-16', '2027-10-16', 1, 'TERMINE_CONDAMNATION', '2025-11-01', 'Condamné - Jugement du 01/11/2025', 2, 'ok', '2025-11-01 10:02:17', '2025-11-01 10:06:51', 1, 1);
+  `motif_fin` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `condamnation_id` int(10) UNSIGNED DEFAULT NULL COMMENT 'Si devenu condamnation',
+  `observations` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `created_by` int(10) UNSIGNED DEFAULT NULL,
+  `updated_by` int(10) UNSIGNED DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Déclencheurs `detentions_provisoires`
 --
-DROP TRIGGER IF EXISTS `trg_detention_provisoire_after_insert`;
 DELIMITER $$
 CREATE TRIGGER `trg_detention_provisoire_after_insert` AFTER INSERT ON `detentions_provisoires` FOR EACH ROW BEGIN
     -- Mettre le détenu en détention provisoire
@@ -832,7 +941,6 @@ CREATE TRIGGER `trg_detention_provisoire_after_insert` AFTER INSERT ON `detentio
 END
 $$
 DELIMITER ;
-DROP TRIGGER IF EXISTS `trg_detention_provisoire_before_insert`;
 DELIMITER $$
 CREATE TRIGGER `trg_detention_provisoire_before_insert` BEFORE INSERT ON `detentions_provisoires` FOR EACH ROW BEGIN
     DECLARE v_categorie VARCHAR(20);
@@ -875,55 +983,42 @@ DELIMITER ;
 -- Structure de la table `detenus`
 --
 
-DROP TABLE IF EXISTS `detenus`;
-CREATE TABLE IF NOT EXISTS `detenus` (
-  `id` int UNSIGNED NOT NULL AUTO_INCREMENT,
-  `matricule` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Matricule unique du détenu',
-  `nom` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `prenoms` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `nom_complet` varchar(355) COLLATE utf8mb4_unicode_ci GENERATED ALWAYS AS (concat(`nom`,_utf8mb4' ',`prenoms`)) STORED,
+CREATE TABLE `detenus` (
+  `id` int(10) UNSIGNED NOT NULL,
+  `matricule` varchar(50) DEFAULT NULL COMMENT 'Matricule unique du détenu',
+  `nom` varchar(100) NOT NULL,
+  `prenoms` varchar(255) NOT NULL,
+  `nom_complet` varchar(355) GENERATED ALWAYS AS (concat(`nom`,_utf8mb4' ',`prenoms`)) STORED,
   `date_naissance` date DEFAULT NULL,
-  `lieu_naissance` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `nationalite` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT 'Ivoirienne',
-  `sexe` enum('M','F') COLLATE utf8mb4_unicode_ci NOT NULL,
-  `situation_matrimoniale` enum('CELIBATAIRE','MARIE','DIVORCE','VEUF') COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `nombre_enfants` tinyint DEFAULT '0',
-  `grade_id` int UNSIGNED NOT NULL,
-  `unite_id` int UNSIGNED NOT NULL,
-  `matricule_militaire` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `lieu_naissance` varchar(255) DEFAULT NULL,
+  `nationalite` varchar(100) DEFAULT 'Ivoirienne',
+  `sexe` enum('M','F') NOT NULL,
+  `situation_matrimoniale` enum('CELIBATAIRE','MARIE','DIVORCE','VEUF') DEFAULT NULL,
+  `nombre_enfants` tinyint(4) DEFAULT 0,
+  `grade_id` int(10) UNSIGNED NOT NULL,
+  `unite_id` int(10) UNSIGNED NOT NULL,
+  `matricule_militaire` varchar(50) DEFAULT NULL,
   `date_incorporation` date DEFAULT NULL,
-  `telephone` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `email` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `adresse` text COLLATE utf8mb4_unicode_ci,
-  `personne_contact_nom` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `personne_contact_telephone` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `personne_contact_relation` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `photo_path` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `statut_actuel` enum('DETENTION_PROVISOIRE','CONDAMNE','LIBRE','EVADE','DECEDE') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'DETENTION_PROVISOIRE',
-  `date_changement_statut` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  `is_multrecidiviste` tinyint(1) DEFAULT '0',
-  `nombre_condamnations` tinyint DEFAULT '0',
-  `is_active` tinyint(1) DEFAULT '1',
-  `is_deleted` tinyint(1) DEFAULT '0',
+  `telephone` varchar(20) DEFAULT NULL,
+  `email` varchar(255) DEFAULT NULL,
+  `adresse` text DEFAULT NULL,
+  `personne_contact_nom` varchar(255) DEFAULT NULL,
+  `personne_contact_telephone` varchar(20) DEFAULT NULL,
+  `personne_contact_relation` varchar(50) DEFAULT NULL,
+  `photo_path` varchar(255) DEFAULT NULL,
+  `statut_actuel` enum('DETENTION_PROVISOIRE','CONDAMNE','LIBRE','EVADE','DECEDE','CONDAMNATION_DIRECTE') NOT NULL DEFAULT 'DETENTION_PROVISOIRE',
+  `date_changement_statut` timestamp NULL DEFAULT current_timestamp(),
+  `is_multrecidiviste` tinyint(1) DEFAULT 0,
+  `nombre_condamnations` tinyint(4) DEFAULT 0,
+  `is_active` tinyint(1) DEFAULT 1,
+  `is_deleted` tinyint(1) DEFAULT 0,
   `deleted_at` timestamp NULL DEFAULT NULL,
-  `deleted_by` int UNSIGNED DEFAULT NULL,
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `created_by` int UNSIGNED DEFAULT NULL,
-  `updated_by` int UNSIGNED DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `matricule` (`matricule`),
-  KEY `created_by` (`created_by`),
-  KEY `updated_by` (`updated_by`),
-  KEY `deleted_by` (`deleted_by`),
-  KEY `idx_matricule` (`matricule`),
-  KEY `idx_nom_complet` (`nom_complet`),
-  KEY `idx_grade` (`grade_id`),
-  KEY `idx_unite` (`unite_id`),
-  KEY `idx_statut` (`statut_actuel`),
-  KEY `idx_multrecidiviste` (`is_multrecidiviste`),
-  KEY `idx_deleted` (`is_deleted`)
-) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `deleted_by` int(10) UNSIGNED DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `created_by` int(10) UNSIGNED DEFAULT NULL,
+  `updated_by` int(10) UNSIGNED DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 --
 -- Déchargement des données de la table `detenus`
@@ -931,12 +1026,14 @@ CREATE TABLE IF NOT EXISTS `detenus` (
 
 INSERT INTO `detenus` (`id`, `matricule`, `nom`, `prenoms`, `date_naissance`, `lieu_naissance`, `nationalite`, `sexe`, `situation_matrimoniale`, `nombre_enfants`, `grade_id`, `unite_id`, `matricule_militaire`, `date_incorporation`, `telephone`, `email`, `adresse`, `personne_contact_nom`, `personne_contact_telephone`, `personne_contact_relation`, `photo_path`, `statut_actuel`, `date_changement_statut`, `is_multrecidiviste`, `nombre_condamnations`, `is_active`, `is_deleted`, `deleted_at`, `deleted_by`, `created_at`, `updated_at`, `created_by`, `updated_by`) VALUES
 (1, 'DET2025000001', 'KOUASSI', 'JEAN', '1995-01-01', 'ABIDJAN', 'Ivoirienne', 'M', 'CELIBATAIRE', 0, 12, 1, NULL, '2025-05-01', '05050505', 'kouassi@gmail.com', 'Cocody', 'Kouassi Gilbert', '05050505', 'Frère', 'uploads/photos/detenu_1761952092.jpg', 'LIBRE', '2025-11-01 10:29:58', 1, 1, 1, 0, NULL, NULL, '2025-10-31 23:08:12', '2025-11-01 10:29:58', 1, 1),
-(2, 'DET2025000002', 'Caporal KONÉ', 'Yao Marcel', '1995-01-01', 'ABIDJAN', 'Ivoirienne', 'M', 'MARIE', 2, 3, 1, NULL, '2023-05-15', '+225 07 XX XX XX XX', 'kone.marcel@armee.ci', 'Cité Militaire, Bouaké', 'KONÉ Adjoua Brigitte', '+225 05 XX XX XX XX', 'Épouse', NULL, 'CONDAMNE', '2025-11-01 10:06:51', 1, 2, 1, 0, NULL, NULL, '2025-10-31 23:41:33', '2025-11-01 10:06:51', 1, 1);
+(2, 'DET2025000002', 'Caporal KONÉ', 'Yao Marcel', '1995-01-01', 'ABIDJAN', 'Ivoirienne', 'M', 'MARIE', 2, 3, 1, NULL, '2023-05-15', '+225 07 XX XX XX XX', 'kone.marcel@armee.ci', 'Cité Militaire, Bouaké', 'KONÉ Adjoua Brigitte', '+225 05 XX XX XX XX', 'Épouse', NULL, 'CONDAMNE', '2025-11-01 10:06:51', 1, 2, 1, 0, NULL, NULL, '2025-10-31 23:41:33', '2025-11-01 10:06:51', 1, 1),
+(3, 'DET2025000003', 'AMADOU', 'BALLO', '1988-01-08', 'ABIDJAN', 'Ivoirienne', 'M', 'MARIE', 6, 1, 1, NULL, '2020-01-01', '+225 07 XX XX XX XX', 'ballo@gmail.com', 'YOPOUGON', 'MARIAM BALLO', '+225 05 XX XX XX XX', 'Épouse', NULL, 'CONDAMNE', '2025-11-01 13:20:17', 0, 0, 1, 0, NULL, NULL, '2025-11-01 13:20:17', '2025-11-01 13:20:17', 1, NULL),
+(4, 'DET2025000004', 'AMANI', 'PAUL', '1993-01-02', 'BOUAFLE', 'Ivoirienne', 'M', 'CELIBATAIRE', 0, 5, 1, NULL, '2020-01-03', '+22507XXXXXXXX', 'amani@gmail.com', 'BOUAFLE', 'AMANI KOUASSI YAO', '+22507XXXXXXXX', 'PERE', NULL, 'CONDAMNE', '2025-11-03 15:51:14', 0, 0, 1, 0, NULL, NULL, '2025-11-03 15:51:14', '2025-11-03 15:51:14', 2, NULL),
+(5, 'DET2025000005', 'YAH', 'YAH YAHI', '1990-07-04', 'BOUAFLE', 'Ivoirienne', 'M', 'VEUF', 3, 7, 1, NULL, '2020-02-28', '+22507XXXXXXXX', 'yah@gmail.com', 'ABIDJAN', 'YAH KOUASSI YAO', '+22507XXXXXXXX', 'FRERE', NULL, 'CONDAMNE', '2025-11-04 11:04:31', 1, 1, 1, 0, NULL, NULL, '2025-11-04 11:04:31', '2025-11-04 11:51:55', 1, NULL);
 
 --
 -- Déclencheurs `detenus`
 --
-DROP TRIGGER IF EXISTS `trg_detenu_before_insert`;
 DELIMITER $$
 CREATE TRIGGER `trg_detenu_before_insert` BEFORE INSERT ON `detenus` FOR EACH ROW BEGIN
     IF NEW.matricule IS NULL THEN
@@ -956,23 +1053,18 @@ DELIMITER ;
 -- Structure de la table `documents`
 --
 
-DROP TABLE IF EXISTS `documents`;
-CREATE TABLE IF NOT EXISTS `documents` (
-  `id` int UNSIGNED NOT NULL AUTO_INCREMENT,
-  `entity_type` enum('DETENU','CONDAMNATION') COLLATE utf8mb4_unicode_ci NOT NULL,
-  `entity_id` int UNSIGNED NOT NULL,
-  `type_document` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `nom_fichier` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `fichier_path` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `taille_ko` int DEFAULT NULL,
-  `mime_type` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `description` text COLLATE utf8mb4_unicode_ci,
-  `uploaded_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  `uploaded_by` int UNSIGNED DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  KEY `uploaded_by` (`uploaded_by`),
-  KEY `idx_entity` (`entity_type`,`entity_id`),
-  KEY `idx_type` (`type_document`)
+CREATE TABLE `documents` (
+  `id` int(10) UNSIGNED NOT NULL,
+  `entity_type` enum('DETENU','CONDAMNATION') NOT NULL,
+  `entity_id` int(10) UNSIGNED NOT NULL,
+  `type_document` varchar(100) NOT NULL,
+  `nom_fichier` varchar(255) NOT NULL,
+  `fichier_path` varchar(500) NOT NULL,
+  `taille_ko` int(11) DEFAULT NULL,
+  `mime_type` varchar(100) DEFAULT NULL,
+  `description` text DEFAULT NULL,
+  `uploaded_at` timestamp NULL DEFAULT current_timestamp(),
+  `uploaded_by` int(10) UNSIGNED DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- --------------------------------------------------------
@@ -981,20 +1073,15 @@ CREATE TABLE IF NOT EXISTS `documents` (
 -- Structure de la table `grades`
 --
 
-DROP TABLE IF EXISTS `grades`;
-CREATE TABLE IF NOT EXISTS `grades` (
-  `id` int UNSIGNED NOT NULL AUTO_INCREMENT,
-  `code` varchar(10) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Code du grade (ex: SCH, MDL)',
-  `libelle` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Libellé complet',
-  `hierarchie` int NOT NULL COMMENT 'Ordre hiérarchique (1=plus bas)',
-  `is_active` tinyint(1) DEFAULT '1',
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `code` (`code`),
-  KEY `idx_code` (`code`),
-  KEY `idx_active` (`is_active`)
-) ENGINE=InnoDB AUTO_INCREMENT=241 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE TABLE `grades` (
+  `id` int(10) UNSIGNED NOT NULL,
+  `code` varchar(10) NOT NULL COMMENT 'Code du grade (ex: SCH, MDL)',
+  `libelle` varchar(100) NOT NULL COMMENT 'Libellé complet',
+  `hierarchie` int(11) NOT NULL COMMENT 'Ordre hiérarchique (1=plus bas)',
+  `is_active` tinyint(1) DEFAULT 1,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 --
 -- Déchargement des données de la table `grades`
@@ -1027,23 +1114,18 @@ INSERT INTO `grades` (`id`, `code`, `libelle`, `hierarchie`, `is_active`, `creat
 -- Structure de la table `infractions`
 --
 
-DROP TABLE IF EXISTS `infractions`;
-CREATE TABLE IF NOT EXISTS `infractions` (
-  `id` int UNSIGNED NOT NULL AUTO_INCREMENT,
-  `code` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `libelle` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `categorie` enum('CRIME','DELIT','CONTRAVENTION') COLLATE utf8mb4_unicode_ci NOT NULL,
-  `duree_detention_provisoire_mois` int DEFAULT NULL COMMENT 'Durée max détention provisoire',
-  `gravite` tinyint NOT NULL COMMENT '1=faible, 10=grave',
-  `description` text COLLATE utf8mb4_unicode_ci,
-  `is_active` tinyint(1) DEFAULT '1',
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `code` (`code`),
-  KEY `idx_categorie` (`categorie`),
-  KEY `idx_gravite` (`gravite`)
-) ENGINE=InnoDB AUTO_INCREMENT=85 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE TABLE `infractions` (
+  `id` int(10) UNSIGNED NOT NULL,
+  `code` varchar(50) NOT NULL,
+  `libelle` varchar(255) NOT NULL,
+  `categorie` enum('CRIME','DELIT','CONTRAVENTION') NOT NULL,
+  `duree_detention_provisoire_mois` int(11) DEFAULT NULL COMMENT 'Durée max détention provisoire',
+  `gravite` tinyint(4) NOT NULL COMMENT '1=faible, 10=grave',
+  `description` text DEFAULT NULL,
+  `is_active` tinyint(1) DEFAULT 1,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 --
 -- Déchargement des données de la table `infractions`
@@ -1064,24 +1146,19 @@ INSERT INTO `infractions` (`id`, `code`, `libelle`, `categorie`, `duree_detentio
 -- Structure de la table `lieux_detention`
 --
 
-DROP TABLE IF EXISTS `lieux_detention`;
-CREATE TABLE IF NOT EXISTS `lieux_detention` (
-  `id` int UNSIGNED NOT NULL AUTO_INCREMENT,
-  `code` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `nom` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `type` enum('PRISON_MILITAIRE','PRISON_CIVILE','MAISON_ARRET','AUTRES') COLLATE utf8mb4_unicode_ci NOT NULL,
-  `capacite` int DEFAULT NULL COMMENT 'Capacité d''accueil',
-  `adresse` text COLLATE utf8mb4_unicode_ci,
-  `ville` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `telephone` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `is_active` tinyint(1) DEFAULT '1',
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `code` (`code`),
-  KEY `idx_type` (`type`),
-  KEY `idx_ville` (`ville`)
-) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE TABLE `lieux_detention` (
+  `id` int(10) UNSIGNED NOT NULL,
+  `code` varchar(20) NOT NULL,
+  `nom` varchar(255) NOT NULL,
+  `type` enum('PRISON_MILITAIRE','PRISON_CIVILE','MAISON_ARRET','AUTRES') NOT NULL,
+  `capacite` int(11) DEFAULT NULL COMMENT 'Capacité d''accueil',
+  `adresse` text DEFAULT NULL,
+  `ville` varchar(100) DEFAULT NULL,
+  `telephone` varchar(20) DEFAULT NULL,
+  `is_active` tinyint(1) DEFAULT 1,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 --
 -- Déchargement des données de la table `lieux_detention`
@@ -1096,29 +1173,21 @@ INSERT INTO `lieux_detention` (`id`, `code`, `nom`, `type`, `capacite`, `adresse
 -- Structure de la table `notifications`
 --
 
-DROP TABLE IF EXISTS `notifications`;
-CREATE TABLE IF NOT EXISTS `notifications` (
-  `id` int UNSIGNED NOT NULL AUTO_INCREMENT,
-  `type` enum('LIBERATION_IMMINENTE','FIN_DETENTION_PROVISOIRE','DOCUMENT_MANQUANT','AUTRE') COLLATE utf8mb4_unicode_ci NOT NULL,
-  `urgence` enum('INFO','LOW','MEDIUM','HIGH','CRITICAL') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'INFO',
-  `entity_type` enum('DETENU','CONDAMNATION') COLLATE utf8mb4_unicode_ci NOT NULL,
-  `entity_id` int UNSIGNED NOT NULL,
-  `titre` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `message` text COLLATE utf8mb4_unicode_ci NOT NULL,
+CREATE TABLE `notifications` (
+  `id` int(10) UNSIGNED NOT NULL,
+  `type` enum('LIBERATION_IMMINENTE','FIN_DETENTION_PROVISOIRE','DOCUMENT_MANQUANT','AUTRE') NOT NULL,
+  `urgence` enum('INFO','LOW','MEDIUM','HIGH','CRITICAL') NOT NULL DEFAULT 'INFO',
+  `entity_type` enum('DETENU','CONDAMNATION','DETENTION_PROVISOIRE') NOT NULL,
+  `entity_id` int(10) UNSIGNED NOT NULL,
+  `titre` varchar(255) NOT NULL,
+  `message` text NOT NULL,
   `date_evenement` date DEFAULT NULL,
-  `jours_avant` int DEFAULT NULL,
-  `is_read` tinyint(1) DEFAULT '0',
+  `jours_avant` int(11) DEFAULT NULL,
+  `is_read` tinyint(1) DEFAULT 0,
   `read_at` timestamp NULL DEFAULT NULL,
-  `read_by` int UNSIGNED DEFAULT NULL,
-  `is_active` tinyint(1) DEFAULT '1',
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `read_by` (`read_by`),
-  KEY `idx_type` (`type`),
-  KEY `idx_urgence` (`urgence`),
-  KEY `idx_entity` (`entity_type`,`entity_id`),
-  KEY `idx_read` (`is_read`),
-  KEY `idx_active` (`is_active`)
+  `read_by` int(10) UNSIGNED DEFAULT NULL,
+  `is_active` tinyint(1) DEFAULT 1,
+  `created_at` timestamp NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- --------------------------------------------------------
@@ -1127,29 +1196,21 @@ CREATE TABLE IF NOT EXISTS `notifications` (
 -- Structure de la table `periodes_detention`
 --
 
-DROP TABLE IF EXISTS `periodes_detention`;
-CREATE TABLE IF NOT EXISTS `periodes_detention` (
-  `id` int UNSIGNED NOT NULL AUTO_INCREMENT,
-  `detenu_id` int UNSIGNED NOT NULL,
-  `condamnation_id` int UNSIGNED DEFAULT NULL,
-  `type` enum('DETENTION_PROVISOIRE','EXECUTION_PEINE') COLLATE utf8mb4_unicode_ci NOT NULL,
-  `motif` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+CREATE TABLE `periodes_detention` (
+  `id` int(10) UNSIGNED NOT NULL,
+  `detenu_id` int(10) UNSIGNED NOT NULL,
+  `condamnation_id` int(10) UNSIGNED DEFAULT NULL,
+  `type` enum('DETENTION_PROVISOIRE','EXECUTION_PEINE') NOT NULL,
+  `motif` varchar(255) NOT NULL,
   `date_debut` date NOT NULL,
   `date_fin` date DEFAULT NULL,
-  `duree_jours` int DEFAULT NULL COMMENT 'Calculé par trigger',
-  `lieu_detention_id` int UNSIGNED NOT NULL,
-  `observations` text COLLATE utf8mb4_unicode_ci,
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `created_by` int UNSIGNED DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  KEY `lieu_detention_id` (`lieu_detention_id`),
-  KEY `created_by` (`created_by`),
-  KEY `idx_detenu` (`detenu_id`),
-  KEY `idx_condamnation` (`condamnation_id`),
-  KEY `idx_type` (`type`),
-  KEY `idx_dates` (`date_debut`,`date_fin`)
-) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `duree_jours` int(11) DEFAULT NULL COMMENT 'Calculé par trigger',
+  `lieu_detention_id` int(10) UNSIGNED NOT NULL,
+  `observations` text DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `created_by` int(10) UNSIGNED DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 --
 -- Déchargement des données de la table `periodes_detention`
@@ -1158,12 +1219,12 @@ CREATE TABLE IF NOT EXISTS `periodes_detention` (
 INSERT INTO `periodes_detention` (`id`, `detenu_id`, `condamnation_id`, `type`, `motif`, `date_debut`, `date_fin`, `duree_jours`, `lieu_detention_id`, `observations`, `created_at`, `updated_at`, `created_by`) VALUES
 (1, 1, 1, 'EXECUTION_PEINE', 'Exécution de peine', '2025-10-31', '2025-11-01', 1, 1, NULL, '2025-10-31 23:15:36', '2025-11-01 10:29:58', 1),
 (2, 2, NULL, 'DETENTION_PROVISOIRE', 'Détention provisoire - Dossier DP-2025-', '2025-10-16', '2025-11-01', 16, 1, NULL, '2025-11-01 10:02:17', '2025-11-01 10:06:51', 1),
-(3, 2, 2, 'EXECUTION_PEINE', 'Exécution de peine', '2025-11-01', NULL, NULL, 1, NULL, '2025-11-01 10:06:51', '2025-11-01 10:06:51', 1);
+(3, 2, 2, 'EXECUTION_PEINE', 'Exécution de peine', '2025-11-01', NULL, NULL, 1, NULL, '2025-11-01 10:06:51', '2025-11-01 10:06:51', 1),
+(4, 5, 3, 'EXECUTION_PEINE', 'Exécution de peine', '2025-02-04', NULL, NULL, 1, NULL, '2025-11-04 11:51:55', '2025-11-04 11:51:55', 1);
 
 --
 -- Déclencheurs `periodes_detention`
 --
-DROP TRIGGER IF EXISTS `trg_periode_detention_before_insert`;
 DELIMITER $$
 CREATE TRIGGER `trg_periode_detention_before_insert` BEFORE INSERT ON `periodes_detention` FOR EACH ROW BEGIN
     IF NEW.date_fin IS NOT NULL THEN
@@ -1172,7 +1233,6 @@ CREATE TRIGGER `trg_periode_detention_before_insert` BEFORE INSERT ON `periodes_
 END
 $$
 DELIMITER ;
-DROP TRIGGER IF EXISTS `trg_periode_detention_before_update`;
 DELIMITER $$
 CREATE TRIGGER `trg_periode_detention_before_update` BEFORE UPDATE ON `periodes_detention` FOR EACH ROW BEGIN
     IF NEW.date_fin IS NOT NULL THEN
@@ -1190,23 +1250,26 @@ DELIMITER ;
 -- Structure de la table `remises_peine`
 --
 
-DROP TABLE IF EXISTS `remises_peine`;
-CREATE TABLE IF NOT EXISTS `remises_peine` (
-  `id` int UNSIGNED NOT NULL AUTO_INCREMENT,
-  `condamnation_id` int UNSIGNED NOT NULL,
-  `type` enum('REMISE_GRACIEUSE','REDUCTION_BONNE_CONDUITE','AMNISTIE','AUTRES') COLLATE utf8mb4_unicode_ci NOT NULL,
-  `motif` text COLLATE utf8mb4_unicode_ci NOT NULL,
-  `jours_remis` int NOT NULL,
+CREATE TABLE `remises_peine` (
+  `id` int(10) UNSIGNED NOT NULL,
+  `condamnation_id` int(10) UNSIGNED NOT NULL,
+  `type` enum('REMISE_GRACIEUSE','REDUCTION_BONNE_CONDUITE','AMNISTIE','AUTRES') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `motif` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `jours_remis` int(11) NOT NULL,
   `date_decision` date NOT NULL,
-  `reference_decision` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `autorite_decision` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  `created_by` int UNSIGNED DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  KEY `created_by` (`created_by`),
-  KEY `idx_condamnation` (`condamnation_id`),
-  KEY `idx_type` (`type`)
-) ;
+  `reference_decision` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `autorite_decision` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `created_by` int(10) UNSIGNED DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Déchargement des données de la table `remises_peine`
+--
+
+INSERT INTO `remises_peine` (`id`, `condamnation_id`, `type`, `motif`, `jours_remis`, `date_decision`, `reference_decision`, `autorite_decision`, `created_at`, `created_by`) VALUES
+(1, 2, 'REDUCTION_BONNE_CONDUITE', 'Bonne conduite', 25, '2025-11-01', '001', 'Procureur', '2025-11-01 13:15:39', 1),
+(2, 3, 'REDUCTION_BONNE_CONDUITE', 'BONNE CONDUITE', 25, '2025-11-04', 'N°005', 'TRIBUNAL MILITAIRE D\'ABIDJAN', '2025-11-04 11:54:12', 1);
 
 -- --------------------------------------------------------
 
@@ -1214,21 +1277,16 @@ CREATE TABLE IF NOT EXISTS `remises_peine` (
 -- Structure de la table `unites`
 --
 
-DROP TABLE IF EXISTS `unites`;
-CREATE TABLE IF NOT EXISTS `unites` (
-  `id` int UNSIGNED NOT NULL AUTO_INCREMENT,
-  `code` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `nom` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `type` enum('ARMEE','GENDARMERIE','POLICE','AUTRES') COLLATE utf8mb4_unicode_ci NOT NULL,
-  `localisation` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `is_active` tinyint(1) DEFAULT '1',
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `code` (`code`),
-  KEY `idx_type` (`type`),
-  KEY `idx_active` (`is_active`)
-) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE TABLE `unites` (
+  `id` int(10) UNSIGNED NOT NULL,
+  `code` varchar(20) NOT NULL,
+  `nom` varchar(255) NOT NULL,
+  `type` enum('ARMEE','GENDARMERIE','POLICE','AUTRES') NOT NULL,
+  `localisation` varchar(255) DEFAULT NULL,
+  `is_active` tinyint(1) DEFAULT 1,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 --
 -- Déchargement des données de la table `unites`
@@ -1243,41 +1301,33 @@ INSERT INTO `unites` (`id`, `code`, `nom`, `type`, `localisation`, `is_active`, 
 -- Structure de la table `users`
 --
 
-DROP TABLE IF EXISTS `users`;
-CREATE TABLE IF NOT EXISTS `users` (
-  `id` int UNSIGNED NOT NULL AUTO_INCREMENT,
-  `username` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `email` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `password_hash` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Hash Argon2id ou bcrypt',
-  `nom` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `prenom` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `role` enum('ADMIN','USER','READONLY') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'USER',
-  `is_active` tinyint(1) DEFAULT '1',
+CREATE TABLE `users` (
+  `id` int(10) UNSIGNED NOT NULL,
+  `username` varchar(50) NOT NULL,
+  `email` varchar(255) NOT NULL,
+  `password_hash` varchar(255) NOT NULL COMMENT 'Hash Argon2id ou bcrypt',
+  `nom` varchar(100) NOT NULL,
+  `prenom` varchar(100) NOT NULL,
+  `role` enum('ADMIN','USER','READONLY') NOT NULL DEFAULT 'USER',
+  `is_active` tinyint(1) DEFAULT 1,
   `last_login_at` timestamp NULL DEFAULT NULL,
-  `last_login_ip` varchar(45) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `failed_login_attempts` tinyint DEFAULT '0',
+  `last_login_ip` varchar(45) DEFAULT NULL,
+  `failed_login_attempts` tinyint(4) DEFAULT 0,
   `locked_until` timestamp NULL DEFAULT NULL,
-  `password_changed_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  `must_change_password` tinyint(1) DEFAULT '0',
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `created_by` int UNSIGNED DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `username` (`username`),
-  UNIQUE KEY `email` (`email`),
-  KEY `idx_username` (`username`),
-  KEY `idx_email` (`email`),
-  KEY `idx_role` (`role`),
-  KEY `idx_active` (`is_active`)
-) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `password_changed_at` timestamp NULL DEFAULT current_timestamp(),
+  `must_change_password` tinyint(1) DEFAULT 0,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `created_by` int(10) UNSIGNED DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 --
 -- Déchargement des données de la table `users`
 --
 
 INSERT INTO `users` (`id`, `username`, `email`, `password_hash`, `nom`, `prenom`, `role`, `is_active`, `last_login_at`, `last_login_ip`, `failed_login_attempts`, `locked_until`, `password_changed_at`, `must_change_password`, `created_at`, `updated_at`, `created_by`) VALUES
-(1, 'fadiga', 'fadiga@gmail.com', '$2y$10$1mo9siDnxD.NXkCkO6YZKe7i70zL09rDEGfASPVqxbbF4m0ylThUK', 'Fadiga', 'Issouf', 'ADMIN', 1, '2025-10-31 20:41:05', '::1', 0, NULL, '2025-10-30 01:15:00', 1, '2025-10-30 00:55:17', '2025-10-31 20:41:05', NULL),
-(2, 'sarah', 'sarahtoure@gmail.com', '$2y$10$16UwyvlU1XuYcoJTOgJSve6nWecL8jnj1G11UA.xt6wWCxoIpOzqi', 'TOURE', 'SARAH', 'USER', 1, '2025-10-30 14:20:54', '::1', 0, NULL, '2025-10-30 09:57:00', 0, '2025-10-30 09:52:03', '2025-10-30 14:20:54', 1);
+(1, 'fadiga', 'fadiga@gmail.com', '$2y$10$WVFb1VzHIjJOynTbJ1jdluRniwfFv2f4m3IqkJPR0v.Bao2M67VrS', 'Fadiga', 'Issouf', 'ADMIN', 1, '2025-11-04 10:15:55', '::1', 0, NULL, '2025-11-04 10:16:27', 0, '2025-10-30 00:55:17', '2025-11-04 10:16:27', NULL),
+(2, 'sarah', 'sarahtoure@gmail.com', '$2y$10$16UwyvlU1XuYcoJTOgJSve6nWecL8jnj1G11UA.xt6wWCxoIpOzqi', 'TOURE', 'SARAH', 'USER', 1, '2025-11-03 15:23:37', '::1', 0, NULL, '2025-10-30 09:57:00', 0, '2025-10-30 09:52:03', '2025-11-03 15:23:37', 1);
 
 -- --------------------------------------------------------
 
@@ -1285,20 +1335,19 @@ INSERT INTO `users` (`id`, `username`, `email`, `password_hash`, `nom`, `prenom`
 -- Doublure de structure pour la vue `v_condamnations_actives`
 -- (Voir ci-dessous la vue réelle)
 --
-DROP VIEW IF EXISTS `v_condamnations_actives`;
-CREATE TABLE IF NOT EXISTS `v_condamnations_actives` (
-`date_jugement` date
-,`date_liberation_effective` date
-,`detenu` varchar(355)
-,`id` int unsigned
-,`infraction` varchar(255)
-,`jours_restants` int
-,`lieu_detention` varchar(255)
-,`matricule` varchar(50)
+CREATE TABLE `v_condamnations_actives` (
+`id` int(10) unsigned
 ,`numero_dossier` varchar(50)
+,`detenu` varchar(355)
+,`matricule` varchar(50)
+,`infraction` varchar(255)
+,`date_jugement` date
 ,`peine` varchar(17)
-,`statut` enum('EN_COURS','TERMINEE','SUSPENDUE','ANNULEE')
+,`date_liberation_effective` date
+,`jours_restants` int(7)
 ,`statut_alerte` varchar(9)
+,`lieu_detention` varchar(255)
+,`statut` enum('EN_COURS','TERMINEE','SUSPENDUE','ANNULEE')
 );
 
 -- --------------------------------------------------------
@@ -1307,19 +1356,18 @@ CREATE TABLE IF NOT EXISTS `v_condamnations_actives` (
 -- Doublure de structure pour la vue `v_detentions_a_liberer`
 -- (Voir ci-dessous la vue réelle)
 --
-DROP VIEW IF EXISTS `v_detentions_a_liberer`;
-CREATE TABLE IF NOT EXISTS `v_detentions_a_liberer` (
-`commande_liberation` varchar(111)
-,`date_limite_legale` date
-,`detention_id` int unsigned
+CREATE TABLE `v_detentions_a_liberer` (
+`detention_id` int(10) unsigned
+,`matricule` varchar(50)
 ,`detenu` varchar(355)
 ,`grade` varchar(100)
-,`infraction_presume` varchar(255)
-,`jours_depassement` bigint
-,`jours_detention_actuel` int
-,`lieu_detention` varchar(255)
-,`matricule` varchar(50)
 ,`numero_dossier` varchar(50)
+,`infraction_presume` varchar(255)
+,`jours_detention_actuel` int(7)
+,`jours_depassement` bigint(11)
+,`date_limite_legale` date
+,`lieu_detention` varchar(255)
+,`commande_liberation` varchar(111)
 );
 
 -- --------------------------------------------------------
@@ -1328,22 +1376,21 @@ CREATE TABLE IF NOT EXISTS `v_detentions_a_liberer` (
 -- Doublure de structure pour la vue `v_detentions_preventives`
 -- (Voir ci-dessous la vue réelle)
 --
-DROP VIEW IF EXISTS `v_detentions_preventives`;
-CREATE TABLE IF NOT EXISTS `v_detentions_preventives` (
-`alerte_detention_preventive` enum('NORMAL','ATTENTION','URGENT','DEPASSEE')
-,`categorie` enum('CRIME','DELIT','CONTRAVENTION')
-,`date_limite_detention_preventive` date
-,`date_mandat_depot` date
-,`date_oip` date
-,`detenu` varchar(355)
-,`duree_max_detention_preventive_mois` int
-,`id` int unsigned
-,`infraction` varchar(255)
-,`jours_detention_actuel` int
-,`jours_restants` int
-,`lieu_detention` varchar(255)
-,`matricule` varchar(50)
+CREATE TABLE `v_detentions_preventives` (
+`id` int(10) unsigned
 ,`numero_dossier` varchar(50)
+,`matricule` varchar(50)
+,`detenu` varchar(355)
+,`infraction` varchar(255)
+,`categorie` enum('CRIME','DELIT','CONTRAVENTION')
+,`date_oip` date
+,`date_mandat_depot` date
+,`duree_max_detention_preventive_mois` int(11)
+,`date_limite_detention_preventive` date
+,`jours_restants` int(7)
+,`jours_detention_actuel` int(7)
+,`alerte_detention_preventive` enum('NORMAL','ATTENTION','URGENT','DEPASSEE')
+,`lieu_detention` varchar(255)
 ,`priorite` varchar(22)
 );
 
@@ -1353,33 +1400,33 @@ CREATE TABLE IF NOT EXISTS `v_detentions_preventives` (
 -- Doublure de structure pour la vue `v_detentions_provisoires`
 -- (Voir ci-dessous la vue réelle)
 --
-DROP VIEW IF EXISTS `v_detentions_provisoires`;
-CREATE TABLE IF NOT EXISTS `v_detentions_provisoires` (
-`categorie_infraction` enum('CRIME','DELIT','CONTRAVENTION')
-,`created_at` timestamp
+CREATE TABLE `v_detentions_provisoires` (
+`id` int(10) unsigned
+,`numero_dossier` varchar(50)
+,`matricule` varchar(50)
+,`detenu` varchar(355)
+,`grade_id` int(10) unsigned
+,`grade_code` varchar(10)
+,`grade` varchar(100)
+,`unite` varchar(255)
+,`infraction_presume` varchar(255)
+,`categorie_infraction` enum('CRIME','DELIT','CONTRAVENTION')
 ,`date_debut_detention` date
 ,`date_limite_legale` date
-,`date_mandat_depot` date
-,`date_oip` date
-,`detenu` varchar(355)
-,`duree_max_mois` int
-,`grade` varchar(100)
-,`grade_code` varchar(10)
-,`grade_id` int unsigned
-,`id` int unsigned
-,`infraction_presume` varchar(255)
-,`jours_detention_actuel` int
-,`jours_restants` int
-,`lieu_detention` varchar(255)
-,`matricule` varchar(50)
-,`mois_detention_actuel` decimal(10,1)
+,`jours_restants` int(7)
+,`jours_detention_actuel` int(7)
+,`mois_detention_actuel` decimal(8,1)
+,`duree_max_mois` int(11)
+,`pourcentage_duree` decimal(11,1)
 ,`niveau_alerte` varchar(9)
-,`numero_dossier` varchar(50)
-,`observations` text
-,`pourcentage_duree` decimal(13,1)
 ,`priorite` varchar(22)
+,`lieu_detention` varchar(255)
+,`lieu_detention_id` int(10) unsigned
 ,`statut` enum('EN_COURS','TERMINE_CONDAMNATION','TERMINE_LIBERATION','TERMINE_NON_LIEU')
-,`unite` varchar(255)
+,`date_oip` date
+,`date_mandat_depot` date
+,`observations` text
+,`created_at` timestamp
 ,`updated_at` timestamp
 );
 
@@ -1389,22 +1436,21 @@ CREATE TABLE IF NOT EXISTS `v_detentions_provisoires` (
 -- Doublure de structure pour la vue `v_detenus_complets`
 -- (Voir ci-dessous la vue réelle)
 --
-DROP VIEW IF EXISTS `v_detenus_complets`;
-CREATE TABLE IF NOT EXISTS `v_detenus_complets` (
-`age` bigint
-,`created_at` timestamp
-,`date_naissance` date
-,`grade` varchar(100)
-,`id` int unsigned
-,`is_multrecidiviste` tinyint(1)
+CREATE TABLE `v_detenus_complets` (
+`id` int(10) unsigned
 ,`matricule` varchar(50)
 ,`nom_complet` varchar(355)
-,`nombre_condamnations` tinyint
-,`photo_path` varchar(255)
+,`date_naissance` date
+,`age` bigint(21)
 ,`sexe` enum('M','F')
-,`statut_actuel` enum('DETENTION_PROVISOIRE','CONDAMNE','LIBRE','EVADE','DECEDE')
-,`telephone` varchar(20)
+,`grade` varchar(100)
 ,`unite` varchar(255)
+,`statut_actuel` enum('DETENTION_PROVISOIRE','CONDAMNE','LIBRE','EVADE','DECEDE','CONDAMNATION_DIRECTE')
+,`is_multrecidiviste` tinyint(1)
+,`nombre_condamnations` tinyint(4)
+,`telephone` varchar(20)
+,`photo_path` varchar(255)
+,`created_at` timestamp
 );
 
 -- --------------------------------------------------------
@@ -1413,14 +1459,13 @@ CREATE TABLE IF NOT EXISTS `v_detenus_complets` (
 -- Doublure de structure pour la vue `v_statistiques`
 -- (Voir ci-dessous la vue réelle)
 --
-DROP VIEW IF EXISTS `v_statistiques`;
-CREATE TABLE IF NOT EXISTS `v_statistiques` (
-`condamnations_actives` bigint
-,`total_condamnes` bigint
-,`total_detention_provisoire` bigint
-,`total_detenus` bigint
-,`total_liberes` bigint
-,`total_multrecidivistes` bigint
+CREATE TABLE `v_statistiques` (
+`total_detenus` bigint(21)
+,`total_condamnes` bigint(21)
+,`total_detention_provisoire` bigint(21)
+,`total_liberes` bigint(21)
+,`total_multrecidivistes` bigint(21)
+,`condamnations_actives` bigint(21)
 );
 
 -- --------------------------------------------------------
@@ -1429,19 +1474,18 @@ CREATE TABLE IF NOT EXISTS `v_statistiques` (
 -- Doublure de structure pour la vue `v_stats_detentions_provisoires`
 -- (Voir ci-dessous la vue réelle)
 --
-DROP VIEW IF EXISTS `v_stats_detentions_provisoires`;
-CREATE TABLE IF NOT EXISTS `v_stats_detentions_provisoires` (
-`attention` decimal(23,0)
-,`crimes` decimal(23,0)
-,`critiques` decimal(23,0)
-,`delits` decimal(23,0)
-,`depassees` decimal(23,0)
-,`duree_max_jours` int
+CREATE TABLE `v_stats_detentions_provisoires` (
+`total` bigint(21)
+,`depassees` decimal(22,0)
+,`critiques` decimal(22,0)
+,`urgentes` decimal(22,0)
+,`attention` decimal(22,0)
+,`crimes` decimal(22,0)
+,`delits` decimal(22,0)
 ,`duree_moyenne_jours` decimal(11,0)
-,`jours_min_restants` int
-,`pourcentage_moyen_duree` decimal(14,1)
-,`total` bigint
-,`urgentes` decimal(23,0)
+,`pourcentage_moyen_duree` decimal(12,1)
+,`duree_max_jours` int(7)
+,`jours_min_restants` int(7)
 );
 
 -- --------------------------------------------------------
@@ -1451,8 +1495,7 @@ CREATE TABLE IF NOT EXISTS `v_stats_detentions_provisoires` (
 --
 DROP TABLE IF EXISTS `v_condamnations_actives`;
 
-DROP VIEW IF EXISTS `v_condamnations_actives`;
-CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_condamnations_actives`  AS SELECT `c`.`id` AS `id`, `c`.`numero_dossier` AS `numero_dossier`, `d`.`nom_complet` AS `detenu`, `d`.`matricule` AS `matricule`, `i`.`libelle` AS `infraction`, `c`.`date_jugement` AS `date_jugement`, concat(`c`.`peine_valeur`,' ',`c`.`peine_unite`) AS `peine`, `c`.`date_liberation_effective` AS `date_liberation_effective`, (to_days(`c`.`date_liberation_effective`) - to_days(now())) AS `jours_restants`, (case when (`c`.`date_liberation_effective` < now()) then 'LIBERABLE' when ((to_days(`c`.`date_liberation_effective`) - to_days(now())) <= 1) then 'CRITIQUE' when ((to_days(`c`.`date_liberation_effective`) - to_days(now())) <= 7) then 'URGENT' when ((to_days(`c`.`date_liberation_effective`) - to_days(now())) <= 14) then 'ATTENTION' when ((to_days(`c`.`date_liberation_effective`) - to_days(now())) <= 30) then 'A_SUIVRE' else 'NORMAL' end) AS `statut_alerte`, `l`.`nom` AS `lieu_detention`, `c`.`statut` AS `statut` FROM (((`condamnations` `c` join `detenus` `d` on((`c`.`detenu_id` = `d`.`id`))) join `infractions` `i` on((`c`.`infraction_id` = `i`.`id`))) left join `lieux_detention` `l` on((`c`.`lieu_detention_id` = `l`.`id`))) WHERE ((`c`.`statut` = 'EN_COURS') AND (`c`.`is_deleted` = false) AND (`d`.`is_deleted` = false))  ;
+CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_condamnations_actives`  AS SELECT `c`.`id` AS `id`, `c`.`numero_dossier` AS `numero_dossier`, `d`.`nom_complet` AS `detenu`, `d`.`matricule` AS `matricule`, `i`.`libelle` AS `infraction`, `c`.`date_jugement` AS `date_jugement`, concat(`c`.`peine_valeur`,' ',`c`.`peine_unite`) AS `peine`, `c`.`date_liberation_effective` AS `date_liberation_effective`, to_days(`c`.`date_liberation_effective`) - to_days(current_timestamp()) AS `jours_restants`, CASE WHEN `c`.`date_liberation_effective` < current_timestamp() THEN 'LIBERABLE' WHEN to_days(`c`.`date_liberation_effective`) - to_days(current_timestamp()) <= 1 THEN 'CRITIQUE' WHEN to_days(`c`.`date_liberation_effective`) - to_days(current_timestamp()) <= 7 THEN 'URGENT' WHEN to_days(`c`.`date_liberation_effective`) - to_days(current_timestamp()) <= 14 THEN 'ATTENTION' WHEN to_days(`c`.`date_liberation_effective`) - to_days(current_timestamp()) <= 30 THEN 'A_SUIVRE' ELSE 'NORMAL' END AS `statut_alerte`, `l`.`nom` AS `lieu_detention`, `c`.`statut` AS `statut` FROM (((`condamnations` `c` join `detenus` `d` on(`c`.`detenu_id` = `d`.`id`)) join `infractions` `i` on(`c`.`infraction_id` = `i`.`id`)) left join `lieux_detention` `l` on(`c`.`lieu_detention_id` = `l`.`id`)) WHERE `c`.`statut` = 'EN_COURS' AND `c`.`is_deleted` = 0 AND `d`.`is_deleted` = 0 ;
 
 -- --------------------------------------------------------
 
@@ -1461,8 +1504,7 @@ CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW 
 --
 DROP TABLE IF EXISTS `v_detentions_a_liberer`;
 
-DROP VIEW IF EXISTS `v_detentions_a_liberer`;
-CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_detentions_a_liberer`  AS SELECT `v_detentions_provisoires`.`id` AS `detention_id`, `v_detentions_provisoires`.`matricule` AS `matricule`, `v_detentions_provisoires`.`detenu` AS `detenu`, `v_detentions_provisoires`.`grade` AS `grade`, `v_detentions_provisoires`.`numero_dossier` AS `numero_dossier`, `v_detentions_provisoires`.`infraction_presume` AS `infraction_presume`, `v_detentions_provisoires`.`jours_detention_actuel` AS `jours_detention_actuel`, abs(`v_detentions_provisoires`.`jours_restants`) AS `jours_depassement`, `v_detentions_provisoires`.`date_limite_legale` AS `date_limite_legale`, `v_detentions_provisoires`.`lieu_detention` AS `lieu_detention`, concat('CALL sp_liberer_detention_provisoire(',`v_detentions_provisoires`.`id`,', /* user_id */, \'Dépassement délai légal de ',abs(`v_detentions_provisoires`.`jours_restants`),' jours\')') AS `commande_liberation` FROM `v_detentions_provisoires` WHERE (`v_detentions_provisoires`.`jours_restants` < 0) ORDER BY `v_detentions_provisoires`.`jours_restants` ASC  ;
+CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_detentions_a_liberer`  AS SELECT `v_detentions_provisoires`.`id` AS `detention_id`, `v_detentions_provisoires`.`matricule` AS `matricule`, `v_detentions_provisoires`.`detenu` AS `detenu`, `v_detentions_provisoires`.`grade` AS `grade`, `v_detentions_provisoires`.`numero_dossier` AS `numero_dossier`, `v_detentions_provisoires`.`infraction_presume` AS `infraction_presume`, `v_detentions_provisoires`.`jours_detention_actuel` AS `jours_detention_actuel`, abs(`v_detentions_provisoires`.`jours_restants`) AS `jours_depassement`, `v_detentions_provisoires`.`date_limite_legale` AS `date_limite_legale`, `v_detentions_provisoires`.`lieu_detention` AS `lieu_detention`, concat('CALL sp_liberer_detention_provisoire(',`v_detentions_provisoires`.`id`,', /* user_id */, \'Dépassement délai légal de ',abs(`v_detentions_provisoires`.`jours_restants`),' jours\')') AS `commande_liberation` FROM `v_detentions_provisoires` WHERE `v_detentions_provisoires`.`jours_restants` < 0 ORDER BY `v_detentions_provisoires`.`jours_restants` ASC ;
 
 -- --------------------------------------------------------
 
@@ -1471,8 +1513,7 @@ CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW 
 --
 DROP TABLE IF EXISTS `v_detentions_preventives`;
 
-DROP VIEW IF EXISTS `v_detentions_preventives`;
-CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_detentions_preventives`  AS SELECT `c`.`id` AS `id`, `c`.`numero_dossier` AS `numero_dossier`, `d`.`matricule` AS `matricule`, `d`.`nom_complet` AS `detenu`, `i`.`libelle` AS `infraction`, `i`.`categorie` AS `categorie`, `c`.`date_oip` AS `date_oip`, `c`.`date_mandat_depot` AS `date_mandat_depot`, `c`.`duree_max_detention_preventive_mois` AS `duree_max_detention_preventive_mois`, `c`.`date_limite_detention_preventive` AS `date_limite_detention_preventive`, (to_days(`c`.`date_limite_detention_preventive`) - to_days(now())) AS `jours_restants`, (to_days(now()) - to_days(coalesce(`c`.`date_mandat_depot`,`c`.`date_oip`))) AS `jours_detention_actuel`, `c`.`alerte_detention_preventive` AS `alerte_detention_preventive`, `l`.`nom` AS `lieu_detention`, (case when (`c`.`date_limite_detention_preventive` < now()) then 'LIBÉRATION OBLIGATOIRE' when ((to_days(`c`.`date_limite_detention_preventive`) - to_days(now())) <= 7) then 'TRÈS URGENT' when ((to_days(`c`.`date_limite_detention_preventive`) - to_days(now())) <= 30) then 'URGENT' when ((to_days(`c`.`date_limite_detention_preventive`) - to_days(now())) <= 60) then 'À SURVEILLER' else 'NORMAL' end) AS `priorite` FROM (((`condamnations` `c` join `detenus` `d` on((`c`.`detenu_id` = `d`.`id`))) join `infractions` `i` on((`c`.`infraction_id` = `i`.`id`))) left join `lieux_detention` `l` on((`c`.`lieu_detention_id` = `l`.`id`))) WHERE ((`c`.`est_en_detention_preventive` = true) AND (`c`.`is_deleted` = false) AND (`d`.`is_deleted` = false)) ORDER BY `c`.`date_limite_detention_preventive` ASC  ;
+CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_detentions_preventives`  AS SELECT `c`.`id` AS `id`, `c`.`numero_dossier` AS `numero_dossier`, `d`.`matricule` AS `matricule`, `d`.`nom_complet` AS `detenu`, `i`.`libelle` AS `infraction`, `i`.`categorie` AS `categorie`, `c`.`date_oip` AS `date_oip`, `c`.`date_mandat_depot` AS `date_mandat_depot`, `c`.`duree_max_detention_preventive_mois` AS `duree_max_detention_preventive_mois`, `c`.`date_limite_detention_preventive` AS `date_limite_detention_preventive`, to_days(`c`.`date_limite_detention_preventive`) - to_days(current_timestamp()) AS `jours_restants`, to_days(current_timestamp()) - to_days(coalesce(`c`.`date_mandat_depot`,`c`.`date_oip`)) AS `jours_detention_actuel`, `c`.`alerte_detention_preventive` AS `alerte_detention_preventive`, `l`.`nom` AS `lieu_detention`, CASE WHEN `c`.`date_limite_detention_preventive` < current_timestamp() THEN 'LIBÉRATION OBLIGATOIRE' WHEN to_days(`c`.`date_limite_detention_preventive`) - to_days(current_timestamp()) <= 7 THEN 'TRÈS URGENT' WHEN to_days(`c`.`date_limite_detention_preventive`) - to_days(current_timestamp()) <= 30 THEN 'URGENT' WHEN to_days(`c`.`date_limite_detention_preventive`) - to_days(current_timestamp()) <= 60 THEN 'À SURVEILLER' ELSE 'NORMAL' END AS `priorite` FROM (((`condamnations` `c` join `detenus` `d` on(`c`.`detenu_id` = `d`.`id`)) join `infractions` `i` on(`c`.`infraction_id` = `i`.`id`)) left join `lieux_detention` `l` on(`c`.`lieu_detention_id` = `l`.`id`)) WHERE `c`.`est_en_detention_preventive` = 1 AND `c`.`is_deleted` = 0 AND `d`.`is_deleted` = 0 ORDER BY `c`.`date_limite_detention_preventive` ASC ;
 
 -- --------------------------------------------------------
 
@@ -1481,8 +1522,7 @@ CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW 
 --
 DROP TABLE IF EXISTS `v_detentions_provisoires`;
 
-DROP VIEW IF EXISTS `v_detentions_provisoires`;
-CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_detentions_provisoires`  AS SELECT `dp`.`id` AS `id`, `dp`.`numero_dossier` AS `numero_dossier`, `d`.`matricule` AS `matricule`, `d`.`nom_complet` AS `detenu`, `d`.`grade_id` AS `grade_id`, `g`.`code` AS `grade_code`, `g`.`libelle` AS `grade`, `u`.`nom` AS `unite`, `i`.`libelle` AS `infraction_presume`, `dp`.`categorie_infraction` AS `categorie_infraction`, `dp`.`date_debut_detention` AS `date_debut_detention`, `dp`.`date_limite_legale` AS `date_limite_legale`, (to_days(`dp`.`date_limite_legale`) - to_days(curdate())) AS `jours_restants`, (to_days(curdate()) - to_days(`dp`.`date_debut_detention`)) AS `jours_detention_actuel`, round(((to_days(curdate()) - to_days(`dp`.`date_debut_detention`)) / 30),1) AS `mois_detention_actuel`, `dp`.`duree_max_mois` AS `duree_max_mois`, round((((to_days(curdate()) - to_days(`dp`.`date_debut_detention`)) / (`dp`.`duree_max_mois` * 30)) * 100),1) AS `pourcentage_duree`, (case when ((to_days(`dp`.`date_limite_legale`) - to_days(curdate())) < 0) then 'DEPASSEE' when ((to_days(`dp`.`date_limite_legale`) - to_days(curdate())) <= 3) then 'CRITIQUE' when ((to_days(`dp`.`date_limite_legale`) - to_days(curdate())) <= 7) then 'URGENT' when ((to_days(`dp`.`date_limite_legale`) - to_days(curdate())) <= 30) then 'ATTENTION' else 'NORMAL' end) AS `niveau_alerte`, (case when ((to_days(`dp`.`date_limite_legale`) - to_days(curdate())) < 0) then 'LIBÉRATION OBLIGATOIRE' when ((to_days(`dp`.`date_limite_legale`) - to_days(curdate())) <= 3) then 'TRÈS CRITIQUE' when ((to_days(`dp`.`date_limite_legale`) - to_days(curdate())) <= 7) then 'URGENT' when ((to_days(`dp`.`date_limite_legale`) - to_days(curdate())) <= 30) then 'À SURVEILLER' else 'NORMAL' end) AS `priorite`, `l`.`nom` AS `lieu_detention`, `dp`.`statut` AS `statut`, `dp`.`date_oip` AS `date_oip`, `dp`.`date_mandat_depot` AS `date_mandat_depot`, `dp`.`observations` AS `observations`, `dp`.`created_at` AS `created_at`, `dp`.`updated_at` AS `updated_at` FROM (((((`detentions_provisoires` `dp` join `detenus` `d` on((`dp`.`detenu_id` = `d`.`id`))) left join `grades` `g` on((`d`.`grade_id` = `g`.`id`))) left join `unites` `u` on((`d`.`unite_id` = `u`.`id`))) left join `infractions` `i` on((`dp`.`infraction_presume_id` = `i`.`id`))) left join `lieux_detention` `l` on((`dp`.`lieu_detention_id` = `l`.`id`))) WHERE ((`dp`.`statut` = 'EN_COURS') AND (`d`.`is_deleted` = false)) ORDER BY `dp`.`date_limite_legale` ASC  ;
+CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_detentions_provisoires`  AS SELECT `dp`.`id` AS `id`, `dp`.`numero_dossier` AS `numero_dossier`, `d`.`matricule` AS `matricule`, `d`.`nom_complet` AS `detenu`, `d`.`grade_id` AS `grade_id`, `g`.`code` AS `grade_code`, `g`.`libelle` AS `grade`, `u`.`nom` AS `unite`, `i`.`libelle` AS `infraction_presume`, `dp`.`categorie_infraction` AS `categorie_infraction`, `dp`.`date_debut_detention` AS `date_debut_detention`, `dp`.`date_limite_legale` AS `date_limite_legale`, to_days(`dp`.`date_limite_legale`) - to_days(curdate()) AS `jours_restants`, to_days(curdate()) - to_days(`dp`.`date_debut_detention`) AS `jours_detention_actuel`, round((to_days(curdate()) - to_days(`dp`.`date_debut_detention`)) / 30,1) AS `mois_detention_actuel`, `dp`.`duree_max_mois` AS `duree_max_mois`, round((to_days(curdate()) - to_days(`dp`.`date_debut_detention`)) / (`dp`.`duree_max_mois` * 30) * 100,1) AS `pourcentage_duree`, CASE WHEN to_days(`dp`.`date_limite_legale`) - to_days(curdate()) < 0 THEN 'DEPASSEE' WHEN to_days(`dp`.`date_limite_legale`) - to_days(curdate()) <= 3 THEN 'CRITIQUE' WHEN to_days(`dp`.`date_limite_legale`) - to_days(curdate()) <= 7 THEN 'URGENT' WHEN to_days(`dp`.`date_limite_legale`) - to_days(curdate()) <= 30 THEN 'ATTENTION' ELSE 'NORMAL' END AS `niveau_alerte`, CASE WHEN to_days(`dp`.`date_limite_legale`) - to_days(curdate()) < 0 THEN 'LIBÉRATION OBLIGATOIRE' WHEN to_days(`dp`.`date_limite_legale`) - to_days(curdate()) <= 3 THEN 'TRÈS CRITIQUE' WHEN to_days(`dp`.`date_limite_legale`) - to_days(curdate()) <= 7 THEN 'URGENT' WHEN to_days(`dp`.`date_limite_legale`) - to_days(curdate()) <= 30 THEN 'À SURVEILLER' ELSE 'NORMAL' END AS `priorite`, `l`.`nom` AS `lieu_detention`, `dp`.`lieu_detention_id` AS `lieu_detention_id`, `dp`.`statut` AS `statut`, `dp`.`date_oip` AS `date_oip`, `dp`.`date_mandat_depot` AS `date_mandat_depot`, `dp`.`observations` AS `observations`, `dp`.`created_at` AS `created_at`, `dp`.`updated_at` AS `updated_at` FROM (((((`detentions_provisoires` `dp` join `detenus` `d` on(`dp`.`detenu_id` = `d`.`id`)) left join `grades` `g` on(`d`.`grade_id` = `g`.`id`)) left join `unites` `u` on(`d`.`unite_id` = `u`.`id`)) left join `infractions` `i` on(`dp`.`infraction_presume_id` = `i`.`id`)) left join `lieux_detention` `l` on(`dp`.`lieu_detention_id` = `l`.`id`)) WHERE `dp`.`statut` = 'EN_COURS' AND `d`.`is_deleted` = 0 ORDER BY `dp`.`date_limite_legale` ASC ;
 
 -- --------------------------------------------------------
 
@@ -1491,8 +1531,7 @@ CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW 
 --
 DROP TABLE IF EXISTS `v_detenus_complets`;
 
-DROP VIEW IF EXISTS `v_detenus_complets`;
-CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_detenus_complets`  AS SELECT `d`.`id` AS `id`, `d`.`matricule` AS `matricule`, `d`.`nom_complet` AS `nom_complet`, `d`.`date_naissance` AS `date_naissance`, timestampdiff(YEAR,`d`.`date_naissance`,now()) AS `age`, `d`.`sexe` AS `sexe`, `g`.`libelle` AS `grade`, `u`.`nom` AS `unite`, `d`.`statut_actuel` AS `statut_actuel`, `d`.`is_multrecidiviste` AS `is_multrecidiviste`, `d`.`nombre_condamnations` AS `nombre_condamnations`, `d`.`telephone` AS `telephone`, `d`.`photo_path` AS `photo_path`, `d`.`created_at` AS `created_at` FROM ((`detenus` `d` join `grades` `g` on((`d`.`grade_id` = `g`.`id`))) join `unites` `u` on((`d`.`unite_id` = `u`.`id`))) WHERE (`d`.`is_deleted` = false)  ;
+CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_detenus_complets`  AS SELECT `d`.`id` AS `id`, `d`.`matricule` AS `matricule`, `d`.`nom_complet` AS `nom_complet`, `d`.`date_naissance` AS `date_naissance`, timestampdiff(YEAR,`d`.`date_naissance`,current_timestamp()) AS `age`, `d`.`sexe` AS `sexe`, `g`.`libelle` AS `grade`, `u`.`nom` AS `unite`, `d`.`statut_actuel` AS `statut_actuel`, `d`.`is_multrecidiviste` AS `is_multrecidiviste`, `d`.`nombre_condamnations` AS `nombre_condamnations`, `d`.`telephone` AS `telephone`, `d`.`photo_path` AS `photo_path`, `d`.`created_at` AS `created_at` FROM ((`detenus` `d` join `grades` `g` on(`d`.`grade_id` = `g`.`id`)) join `unites` `u` on(`d`.`unite_id` = `u`.`id`)) WHERE `d`.`is_deleted` = 0 ;
 
 -- --------------------------------------------------------
 
@@ -1501,8 +1540,7 @@ CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW 
 --
 DROP TABLE IF EXISTS `v_statistiques`;
 
-DROP VIEW IF EXISTS `v_statistiques`;
-CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_statistiques`  AS SELECT (select count(0) from `detenus` where (`detenus`.`is_deleted` = false)) AS `total_detenus`, (select count(0) from `detenus` where ((`detenus`.`statut_actuel` = 'CONDAMNE') and (`detenus`.`is_deleted` = false))) AS `total_condamnes`, (select count(0) from `detenus` where ((`detenus`.`statut_actuel` = 'DETENTION_PROVISOIRE') and (`detenus`.`is_deleted` = false))) AS `total_detention_provisoire`, (select count(0) from `detenus` where ((`detenus`.`statut_actuel` = 'LIBRE') and (`detenus`.`is_deleted` = false))) AS `total_liberes`, (select count(0) from `detenus` where ((`detenus`.`is_multrecidiviste` = true) and (`detenus`.`is_deleted` = false))) AS `total_multrecidivistes`, (select count(0) from `condamnations` where ((`condamnations`.`statut` = 'EN_COURS') and (`condamnations`.`is_deleted` = false))) AS `condamnations_actives``condamnations_actives`  ;
+CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_statistiques`  AS SELECT (select count(0) from `detenus` where `detenus`.`is_deleted` = 0) AS `total_detenus`, (select count(0) from `detenus` where `detenus`.`statut_actuel` = 'CONDAMNE' and `detenus`.`is_deleted` = 0) AS `total_condamnes`, (select count(0) from `detenus` where `detenus`.`statut_actuel` = 'DETENTION_PROVISOIRE' and `detenus`.`is_deleted` = 0) AS `total_detention_provisoire`, (select count(0) from `detenus` where `detenus`.`statut_actuel` = 'LIBRE' and `detenus`.`is_deleted` = 0) AS `total_liberes`, (select count(0) from `detenus` where `detenus`.`is_multrecidiviste` = 1 and `detenus`.`is_deleted` = 0) AS `total_multrecidivistes`, (select count(0) from `condamnations` where `condamnations`.`statut` = 'EN_COURS' and `condamnations`.`is_deleted` = 0) AS `condamnations_actives` ;
 
 -- --------------------------------------------------------
 
@@ -1511,103 +1549,246 @@ CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW 
 --
 DROP TABLE IF EXISTS `v_stats_detentions_provisoires`;
 
-DROP VIEW IF EXISTS `v_stats_detentions_provisoires`;
-CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_stats_detentions_provisoires`  AS SELECT count(0) AS `total`, sum((case when (`v_detentions_provisoires`.`niveau_alerte` = 'DEPASSEE') then 1 else 0 end)) AS `depassees`, sum((case when (`v_detentions_provisoires`.`niveau_alerte` = 'CRITIQUE') then 1 else 0 end)) AS `critiques`, sum((case when (`v_detentions_provisoires`.`niveau_alerte` = 'URGENT') then 1 else 0 end)) AS `urgentes`, sum((case when (`v_detentions_provisoires`.`niveau_alerte` = 'ATTENTION') then 1 else 0 end)) AS `attention`, sum((case when (`v_detentions_provisoires`.`categorie_infraction` = 'CRIME') then 1 else 0 end)) AS `crimes`, sum((case when (`v_detentions_provisoires`.`categorie_infraction` = 'DELIT') then 1 else 0 end)) AS `delits`, round(avg(`v_detentions_provisoires`.`jours_detention_actuel`),0) AS `duree_moyenne_jours`, round(avg(`v_detentions_provisoires`.`pourcentage_duree`),1) AS `pourcentage_moyen_duree`, max(`v_detentions_provisoires`.`jours_detention_actuel`) AS `duree_max_jours`, min(`v_detentions_provisoires`.`jours_restants`) AS `jours_min_restants` FROM `v_detentions_provisoires``v_detentions_provisoires`  ;
+CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v_stats_detentions_provisoires`  AS SELECT count(0) AS `total`, sum(case when `v`.`niveau_alerte` = 'DEPASSEE' then 1 else 0 end) AS `depassees`, sum(case when `v`.`niveau_alerte` = 'CRITIQUE' then 1 else 0 end) AS `critiques`, sum(case when `v`.`niveau_alerte` = 'URGENT' then 1 else 0 end) AS `urgentes`, sum(case when `v`.`niveau_alerte` = 'ATTENTION' then 1 else 0 end) AS `attention`, sum(case when `v`.`categorie_infraction` = 'CRIME' then 1 else 0 end) AS `crimes`, sum(case when `v`.`categorie_infraction` = 'DELIT' then 1 else 0 end) AS `delits`, round(avg(`v`.`jours_detention_actuel`),0) AS `duree_moyenne_jours`, round(avg(`v`.`pourcentage_duree`),1) AS `pourcentage_moyen_duree`, max(`v`.`jours_detention_actuel`) AS `duree_max_jours`, min(`v`.`jours_restants`) AS `jours_min_restants` FROM `v_detentions_provisoires` AS `v` ;
 
 --
 -- Index pour les tables déchargées
 --
 
 --
+-- Index pour la table `audit_logs`
+--
+ALTER TABLE `audit_logs`
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `idx_user` (`user_id`),
+  ADD KEY `idx_action` (`action`),
+  ADD KEY `idx_entity` (`entity_type`,`entity_id`),
+  ADD KEY `idx_date` (`created_at`);
+
+--
+-- Index pour la table `condamnations`
+--
+ALTER TABLE `condamnations`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `numero_dossier` (`numero_dossier`),
+  ADD KEY `created_by` (`created_by`),
+  ADD KEY `updated_by` (`updated_by`),
+  ADD KEY `deleted_by` (`deleted_by`),
+  ADD KEY `idx_numero_dossier` (`numero_dossier`),
+  ADD KEY `idx_detenu` (`detenu_id`),
+  ADD KEY `idx_infraction` (`infraction_id`),
+  ADD KEY `idx_date_jugement` (`date_jugement`),
+  ADD KEY `idx_statut` (`statut`),
+  ADD KEY `idx_lieu` (`lieu_detention_id`),
+  ADD KEY `idx_deleted` (`is_deleted`),
+  ADD KEY `idx_liberation_effective` (`date_liberation_effective`),
+  ADD KEY `idx_detention_preventive` (`est_en_detention_preventive`,`date_limite_detention_preventive`);
+
+--
+-- Index pour la table `detentions_provisoires`
+--
+ALTER TABLE `detentions_provisoires`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `numero_dossier` (`numero_dossier`),
+  ADD KEY `infraction_presume_id` (`infraction_presume_id`),
+  ADD KEY `condamnation_id` (`condamnation_id`),
+  ADD KEY `created_by` (`created_by`),
+  ADD KEY `updated_by` (`updated_by`),
+  ADD KEY `idx_numero_dossier` (`numero_dossier`),
+  ADD KEY `idx_detenu` (`detenu_id`),
+  ADD KEY `idx_statut` (`statut`),
+  ADD KEY `idx_date_limite` (`date_limite_legale`),
+  ADD KEY `idx_lieu` (`lieu_detention_id`);
+
+--
 -- Index pour la table `detenus`
 --
+ALTER TABLE `detenus`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `matricule` (`matricule`),
+  ADD KEY `created_by` (`created_by`),
+  ADD KEY `updated_by` (`updated_by`),
+  ADD KEY `deleted_by` (`deleted_by`),
+  ADD KEY `idx_matricule` (`matricule`),
+  ADD KEY `idx_nom_complet` (`nom_complet`),
+  ADD KEY `idx_grade` (`grade_id`),
+  ADD KEY `idx_unite` (`unite_id`),
+  ADD KEY `idx_statut` (`statut_actuel`),
+  ADD KEY `idx_multrecidiviste` (`is_multrecidiviste`),
+  ADD KEY `idx_deleted` (`is_deleted`);
 ALTER TABLE `detenus` ADD FULLTEXT KEY `idx_search` (`nom`,`prenoms`);
 
 --
--- Contraintes pour les tables déchargées
---
-
---
--- Contraintes pour la table `audit_logs`
---
-ALTER TABLE `audit_logs`
-  ADD CONSTRAINT `audit_logs_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL;
-
---
--- Contraintes pour la table `condamnations`
---
-ALTER TABLE `condamnations`
-  ADD CONSTRAINT `condamnations_ibfk_1` FOREIGN KEY (`detenu_id`) REFERENCES `detenus` (`id`) ON DELETE RESTRICT,
-  ADD CONSTRAINT `condamnations_ibfk_2` FOREIGN KEY (`infraction_id`) REFERENCES `infractions` (`id`),
-  ADD CONSTRAINT `condamnations_ibfk_3` FOREIGN KEY (`lieu_detention_id`) REFERENCES `lieux_detention` (`id`),
-  ADD CONSTRAINT `condamnations_ibfk_4` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`),
-  ADD CONSTRAINT `condamnations_ibfk_5` FOREIGN KEY (`updated_by`) REFERENCES `users` (`id`),
-  ADD CONSTRAINT `condamnations_ibfk_6` FOREIGN KEY (`deleted_by`) REFERENCES `users` (`id`);
-
---
--- Contraintes pour la table `detentions_provisoires`
---
-ALTER TABLE `detentions_provisoires`
-  ADD CONSTRAINT `detentions_provisoires_ibfk_1` FOREIGN KEY (`detenu_id`) REFERENCES `detenus` (`id`) ON DELETE RESTRICT,
-  ADD CONSTRAINT `detentions_provisoires_ibfk_2` FOREIGN KEY (`infraction_presume_id`) REFERENCES `infractions` (`id`),
-  ADD CONSTRAINT `detentions_provisoires_ibfk_3` FOREIGN KEY (`lieu_detention_id`) REFERENCES `lieux_detention` (`id`),
-  ADD CONSTRAINT `detentions_provisoires_ibfk_4` FOREIGN KEY (`condamnation_id`) REFERENCES `condamnations` (`id`) ON DELETE SET NULL,
-  ADD CONSTRAINT `detentions_provisoires_ibfk_5` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`),
-  ADD CONSTRAINT `detentions_provisoires_ibfk_6` FOREIGN KEY (`updated_by`) REFERENCES `users` (`id`);
-
---
--- Contraintes pour la table `detenus`
---
-ALTER TABLE `detenus`
-  ADD CONSTRAINT `detenus_ibfk_1` FOREIGN KEY (`grade_id`) REFERENCES `grades` (`id`),
-  ADD CONSTRAINT `detenus_ibfk_2` FOREIGN KEY (`unite_id`) REFERENCES `unites` (`id`),
-  ADD CONSTRAINT `detenus_ibfk_3` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`),
-  ADD CONSTRAINT `detenus_ibfk_4` FOREIGN KEY (`updated_by`) REFERENCES `users` (`id`),
-  ADD CONSTRAINT `detenus_ibfk_5` FOREIGN KEY (`deleted_by`) REFERENCES `users` (`id`);
-
---
--- Contraintes pour la table `documents`
+-- Index pour la table `documents`
 --
 ALTER TABLE `documents`
-  ADD CONSTRAINT `documents_ibfk_1` FOREIGN KEY (`uploaded_by`) REFERENCES `users` (`id`);
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `uploaded_by` (`uploaded_by`),
+  ADD KEY `idx_entity` (`entity_type`,`entity_id`),
+  ADD KEY `idx_type` (`type_document`);
 
 --
--- Contraintes pour la table `notifications`
+-- Index pour la table `grades`
+--
+ALTER TABLE `grades`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `code` (`code`),
+  ADD KEY `idx_code` (`code`),
+  ADD KEY `idx_active` (`is_active`);
+
+--
+-- Index pour la table `infractions`
+--
+ALTER TABLE `infractions`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `code` (`code`),
+  ADD KEY `idx_categorie` (`categorie`),
+  ADD KEY `idx_gravite` (`gravite`);
+
+--
+-- Index pour la table `lieux_detention`
+--
+ALTER TABLE `lieux_detention`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `code` (`code`),
+  ADD KEY `idx_type` (`type`),
+  ADD KEY `idx_ville` (`ville`);
+
+--
+-- Index pour la table `notifications`
 --
 ALTER TABLE `notifications`
-  ADD CONSTRAINT `notifications_ibfk_1` FOREIGN KEY (`read_by`) REFERENCES `users` (`id`);
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `read_by` (`read_by`),
+  ADD KEY `idx_type` (`type`),
+  ADD KEY `idx_urgence` (`urgence`),
+  ADD KEY `idx_entity` (`entity_type`,`entity_id`),
+  ADD KEY `idx_read` (`is_read`),
+  ADD KEY `idx_active` (`is_active`);
 
 --
--- Contraintes pour la table `periodes_detention`
+-- Index pour la table `periodes_detention`
 --
 ALTER TABLE `periodes_detention`
-  ADD CONSTRAINT `periodes_detention_ibfk_1` FOREIGN KEY (`detenu_id`) REFERENCES `detenus` (`id`) ON DELETE RESTRICT,
-  ADD CONSTRAINT `periodes_detention_ibfk_2` FOREIGN KEY (`condamnation_id`) REFERENCES `condamnations` (`id`) ON DELETE CASCADE,
-  ADD CONSTRAINT `periodes_detention_ibfk_3` FOREIGN KEY (`lieu_detention_id`) REFERENCES `lieux_detention` (`id`),
-  ADD CONSTRAINT `periodes_detention_ibfk_4` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`);
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `lieu_detention_id` (`lieu_detention_id`),
+  ADD KEY `created_by` (`created_by`),
+  ADD KEY `idx_detenu` (`detenu_id`),
+  ADD KEY `idx_condamnation` (`condamnation_id`),
+  ADD KEY `idx_type` (`type`),
+  ADD KEY `idx_dates` (`date_debut`,`date_fin`);
 
 --
--- Contraintes pour la table `remises_peine`
+-- Index pour la table `remises_peine`
 --
 ALTER TABLE `remises_peine`
-  ADD CONSTRAINT `remises_peine_ibfk_1` FOREIGN KEY (`condamnation_id`) REFERENCES `condamnations` (`id`) ON DELETE CASCADE,
-  ADD CONSTRAINT `remises_peine_ibfk_2` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`);
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `created_by` (`created_by`),
+  ADD KEY `idx_condamnation` (`condamnation_id`),
+  ADD KEY `idx_type` (`type`);
 
-DELIMITER $$
 --
--- Évènements
+-- Index pour la table `unites`
 --
-DROP EVENT IF EXISTS `evt_verifier_detentions_preventives`$$
-CREATE DEFINER=`root`@`localhost` EVENT `evt_verifier_detentions_preventives` ON SCHEDULE EVERY 1 DAY STARTS '2025-11-01 01:08:53' ON COMPLETION NOT PRESERVE ENABLE DO BEGIN
-    CALL sp_verifier_detentions_preventives();
-END$$
+ALTER TABLE `unites`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `code` (`code`),
+  ADD KEY `idx_type` (`type`),
+  ADD KEY `idx_active` (`is_active`);
 
-DROP EVENT IF EXISTS `evt_verifier_detentions_provisoires`$$
-CREATE DEFINER=`root`@`localhost` EVENT `evt_verifier_detentions_provisoires` ON SCHEDULE EVERY 1 DAY STARTS '2025-11-02 06:00:00' ON COMPLETION NOT PRESERVE ENABLE DO BEGIN
-    CALL sp_verifier_detentions_provisoires();
-END$$
+--
+-- Index pour la table `users`
+--
+ALTER TABLE `users`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `username` (`username`),
+  ADD UNIQUE KEY `email` (`email`),
+  ADD KEY `idx_username` (`username`),
+  ADD KEY `idx_email` (`email`),
+  ADD KEY `idx_role` (`role`),
+  ADD KEY `idx_active` (`is_active`);
 
-DELIMITER ;
+--
+-- AUTO_INCREMENT pour les tables déchargées
+--
+
+--
+-- AUTO_INCREMENT pour la table `audit_logs`
+--
+ALTER TABLE `audit_logs`
+  MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=11;
+
+--
+-- AUTO_INCREMENT pour la table `condamnations`
+--
+ALTER TABLE `condamnations`
+  MODIFY `id` int(10) UNSIGNED NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=4;
+
+--
+-- AUTO_INCREMENT pour la table `detentions_provisoires`
+--
+ALTER TABLE `detentions_provisoires`
+  MODIFY `id` int(10) UNSIGNED NOT NULL AUTO_INCREMENT;
+
+--
+-- AUTO_INCREMENT pour la table `detenus`
+--
+ALTER TABLE `detenus`
+  MODIFY `id` int(10) UNSIGNED NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=6;
+
+--
+-- AUTO_INCREMENT pour la table `documents`
+--
+ALTER TABLE `documents`
+  MODIFY `id` int(10) UNSIGNED NOT NULL AUTO_INCREMENT;
+
+--
+-- AUTO_INCREMENT pour la table `grades`
+--
+ALTER TABLE `grades`
+  MODIFY `id` int(10) UNSIGNED NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=421;
+
+--
+-- AUTO_INCREMENT pour la table `infractions`
+--
+ALTER TABLE `infractions`
+  MODIFY `id` int(10) UNSIGNED NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=148;
+
+--
+-- AUTO_INCREMENT pour la table `lieux_detention`
+--
+ALTER TABLE `lieux_detention`
+  MODIFY `id` int(10) UNSIGNED NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
+
+--
+-- AUTO_INCREMENT pour la table `notifications`
+--
+ALTER TABLE `notifications`
+  MODIFY `id` int(10) UNSIGNED NOT NULL AUTO_INCREMENT;
+
+--
+-- AUTO_INCREMENT pour la table `periodes_detention`
+--
+ALTER TABLE `periodes_detention`
+  MODIFY `id` int(10) UNSIGNED NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=5;
+
+--
+-- AUTO_INCREMENT pour la table `remises_peine`
+--
+ALTER TABLE `remises_peine`
+  MODIFY `id` int(10) UNSIGNED NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
+
+--
+-- AUTO_INCREMENT pour la table `unites`
+--
+ALTER TABLE `unites`
+  MODIFY `id` int(10) UNSIGNED NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
+
+--
+-- AUTO_INCREMENT pour la table `users`
+--
+ALTER TABLE `users`
+  MODIFY `id` int(10) UNSIGNED NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
 COMMIT;
 
 /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
