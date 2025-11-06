@@ -94,8 +94,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Récupérer les données pour les selects
-$detenus = $detenuMgr->getAll();
+// Récupérer UNIQUEMENT les détenus avec statut_actuel NULL
+// (nouveaux détenus jamais condamnés, jamais en DP)
+$detenus = $detenuMgr->getAll([
+    'statut_null' => true, // Nouveau filtre
+    'sans_dp_en_cours' => true // Double sécurité
+]);
 $infractions = $refMgr->getAllInfractions();
 $lieux = $refMgr->getAllLieuxDetention();
 ?>
@@ -109,40 +113,40 @@ $lieux = $refMgr->getAllLieuxDetention();
     <?php include '../../requires/link.php'; ?>
     <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
     <style>
-    .info-box {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        padding: 20px;
-        border-radius: 10px;
-        margin-bottom: 20px;
-    }
+        .info-box {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
 
-    .duree-info {
-        display: none;
-        padding: 15px;
-        border-radius: 8px;
-        margin-top: 10px;
-    }
+        .duree-info {
+            display: none;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 10px;
+        }
 
-    .duree-crime {
-        background-color: #ffe5e5;
-        border-left: 4px solid #dc3545;
-    }
+        .duree-crime {
+            background-color: #ffe5e5;
+            border-left: 4px solid #dc3545;
+        }
 
-    .duree-delit {
-        background-color: #fff8e1;
-        border-left: 4px solid #ffc107;
-    }
+        .duree-delit {
+            background-color: #fff8e1;
+            border-left: 4px solid #ffc107;
+        }
 
-    .duree-contravention {
-        background-color: #e3f2fd;
-        border-left: 4px solid #2196f3;
-    }
+        .duree-contravention {
+            background-color: #e3f2fd;
+            border-left: 4px solid #2196f3;
+        }
 
-    .select2-container--default .select2-selection--single {
-        height: 45px;
-        padding: 8px;
-    }
+        .select2-container--default .select2-selection--single {
+            height: 45px;
+            padding: 8px;
+        }
     </style>
 </head>
 
@@ -171,11 +175,11 @@ $lieux = $refMgr->getAllLieuxDetention();
                     </div>
 
                     <?php if (isset($errors['general'])): ?>
-                    <div class="alert alert-danger alert-dismissible fade show">
-                        <i class="fas fa-exclamation-circle me-2"></i>
-                        <?= htmlspecialchars($errors['general']) ?>
-                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                    </div>
+                        <div class="alert alert-danger alert-dismissible fade show">
+                            <i class="fas fa-exclamation-circle me-2"></i>
+                            <?= htmlspecialchars($errors['general']) ?>
+                            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                        </div>
                     <?php endif; ?>
 
                     <div class="row">
@@ -208,9 +212,9 @@ $lieux = $refMgr->getAllLieuxDetention();
                                                 value="<?= htmlspecialchars($_POST['numero_dossier'] ?? 'DP-' . date('Y') . '-') ?>"
                                                 required>
                                             <?php if (isset($errors['numero_dossier'])): ?>
-                                            <div class="invalid-feedback">
-                                                <?= htmlspecialchars($errors['numero_dossier'][0] ?? $errors['numero_dossier']) ?>
-                                            </div>
+                                                <div class="invalid-feedback">
+                                                    <?= htmlspecialchars($errors['numero_dossier'][0] ?? $errors['numero_dossier']) ?>
+                                                </div>
                                             <?php endif; ?>
                                         </div>
 
@@ -224,16 +228,16 @@ $lieux = $refMgr->getAllLieuxDetention();
                                                 id="detenu_id" name="detenu_id" required>
                                                 <option value="">-- Sélectionner un détenu --</option>
                                                 <?php foreach ($detenus as $d): ?>
-                                                <option value="<?= $d['id'] ?>"
-                                                    <?= ($detenuId == $d['id'] || ($_POST['detenu_id'] ?? '') == $d['id']) ? 'selected' : '' ?>>
-                                                    <?= htmlspecialchars($d['matricule'] . ' - ' . $d['nom_complet']) ?>
-                                                </option>
+                                                    <option value="<?= $d['id'] ?>"
+                                                        <?= ($detenuId == $d['id'] || ($_POST['detenu_id'] ?? '') == $d['id']) ? 'selected' : '' ?>>
+                                                        <?= htmlspecialchars($d['matricule'] . ' - ' . $d['nom_complet']) ?>
+                                                    </option>
                                                 <?php endforeach; ?>
                                             </select>
                                             <?php if (isset($errors['detenu_id'])): ?>
-                                            <div class="invalid-feedback">
-                                                <?= htmlspecialchars($errors['detenu_id'][0] ?? $errors['detenu_id']) ?>
-                                            </div>
+                                                <div class="invalid-feedback">
+                                                    <?= htmlspecialchars($errors['detenu_id'][0] ?? $errors['detenu_id']) ?>
+                                                </div>
                                             <?php endif; ?>
                                         </div>
 
@@ -249,18 +253,18 @@ $lieux = $refMgr->getAllLieuxDetention();
                                                 id="infraction_presume_id" name="infraction_presume_id" required>
                                                 <option value="">-- Sélectionner une infraction --</option>
                                                 <?php foreach ($infractions as $infraction): ?>
-                                                <option value="<?= $infraction['id'] ?>"
-                                                    data-categorie="<?= $infraction['categorie'] ?>"
-                                                    <?= ($_POST['infraction_presume_id'] ?? '') == $infraction['id'] ? 'selected' : '' ?>>
-                                                    <?= htmlspecialchars($infraction['libelle']) ?>
-                                                    (<?= $infraction['categorie'] ?>)
-                                                </option>
+                                                    <option value="<?= $infraction['id'] ?>"
+                                                        data-categorie="<?= $infraction['categorie'] ?>"
+                                                        <?= ($_POST['infraction_presume_id'] ?? '') == $infraction['id'] ? 'selected' : '' ?>>
+                                                        <?= htmlspecialchars($infraction['libelle']) ?>
+                                                        (<?= $infraction['categorie'] ?>)
+                                                    </option>
                                                 <?php endforeach; ?>
                                             </select>
                                             <?php if (isset($errors['infraction_presume_id'])): ?>
-                                            <div class="invalid-feedback">
-                                                <?= htmlspecialchars($errors['infraction_presume_id'][0] ?? $errors['infraction_presume_id']) ?>
-                                            </div>
+                                                <div class="invalid-feedback">
+                                                    <?= htmlspecialchars($errors['infraction_presume_id'][0] ?? $errors['infraction_presume_id']) ?>
+                                                </div>
                                             <?php endif; ?>
 
                                             <!-- Affichage durée max -->
@@ -380,16 +384,16 @@ $lieux = $refMgr->getAllLieuxDetention();
                                                 id="lieu_detention_id" name="lieu_detention_id" required>
                                                 <option value="">-- Sélectionner un lieu --</option>
                                                 <?php foreach ($lieux as $lieu): ?>
-                                                <option value="<?= $lieu['id'] ?>"
-                                                    <?= ($_POST['lieu_detention_id'] ?? '') == $lieu['id'] ? 'selected' : '' ?>>
-                                                    <?= htmlspecialchars($lieu['nom']) ?>
-                                                </option>
+                                                    <option value="<?= $lieu['id'] ?>"
+                                                        <?= ($_POST['lieu_detention_id'] ?? '') == $lieu['id'] ? 'selected' : '' ?>>
+                                                        <?= htmlspecialchars($lieu['nom']) ?>
+                                                    </option>
                                                 <?php endforeach; ?>
                                             </select>
                                             <?php if (isset($errors['lieu_detention_id'])): ?>
-                                            <div class="invalid-feedback">
-                                                <?= htmlspecialchars($errors['lieu_detention_id'][0] ?? $errors['lieu_detention_id']) ?>
-                                            </div>
+                                                <div class="invalid-feedback">
+                                                    <?= htmlspecialchars($errors['lieu_detention_id'][0] ?? $errors['lieu_detention_id']) ?>
+                                                </div>
                                             <?php endif; ?>
                                         </div>
 
@@ -417,21 +421,21 @@ $lieux = $refMgr->getAllLieuxDetention();
                         <!-- Colonne droite: Info -->
                         <div class="col-md-4">
                             <?php if ($detenu): ?>
-                            <div class="card">
-                                <div class="card-header bg-primary text-white">
-                                    <h5 class="card-title mb-0">
-                                        <i class="fas fa-user me-2"></i>Détenu Sélectionné
-                                    </h5>
+                                <div class="card">
+                                    <div class="card-header bg-primary text-white">
+                                        <h5 class="card-title mb-0">
+                                            <i class="fas fa-user me-2"></i>Détenu Sélectionné
+                                        </h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <h6><?= htmlspecialchars($detenu['nom_complet']) ?></h6>
+                                        <p class="mb-2">
+                                            <strong>Matricule:</strong> <?= htmlspecialchars($detenu['matricule']) ?><br>
+                                            <strong>Grade:</strong> <?= htmlspecialchars($detenu['grade_libelle']) ?><br>
+                                            <strong>Unité:</strong> <?= htmlspecialchars($detenu['unite_nom']) ?>
+                                        </p>
+                                    </div>
                                 </div>
-                                <div class="card-body">
-                                    <h6><?= htmlspecialchars($detenu['nom_complet']) ?></h6>
-                                    <p class="mb-2">
-                                        <strong>Matricule:</strong> <?= htmlspecialchars($detenu['matricule']) ?><br>
-                                        <strong>Grade:</strong> <?= htmlspecialchars($detenu['grade_libelle']) ?><br>
-                                        <strong>Unité:</strong> <?= htmlspecialchars($detenu['unite_nom']) ?>
-                                    </p>
-                                </div>
-                            </div>
                             <?php endif; ?>
 
                             <div class="card">
@@ -473,68 +477,68 @@ $lieux = $refMgr->getAllLieuxDetention();
     <?php include '../../requires/script.php'; ?>
     <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
     <script>
-    $(document).ready(function() {
-        // Initialiser Select2
-        $('.select2').select2({
-            width: '100%'
-        });
+        $(document).ready(function() {
+            // Initialiser Select2
+            $('.select2').select2({
+                width: '100%'
+            });
 
-        // Afficher la durée max selon l'infraction
-        $('#infraction_presume_id').on('change', function() {
-            const selectedOption = $(this).find('option:selected');
-            const categorie = selectedOption.data('categorie');
-            const dureeInfo = $('#duree_info');
+            // Afficher la durée max selon l'infraction
+            $('#infraction_presume_id').on('change', function() {
+                const selectedOption = $(this).find('option:selected');
+                const categorie = selectedOption.data('categorie');
+                const dureeInfo = $('#duree_info');
 
-            if (categorie) {
-                let duree, classe, texte;
+                if (categorie) {
+                    let duree, classe, texte;
 
-                switch (categorie) {
-                    case 'CRIME':
-                        duree = 24;
-                        classe = 'duree-crime';
-                        texte = '24 mois (2 ans)';
-                        break;
-                    case 'DELIT':
-                        duree = 18;
-                        classe = 'duree-delit';
-                        texte = '18 mois (1 an et demi)';
-                        break;
-                    default:
-                        duree = 6;
-                        classe = 'duree-contravention';
-                        texte = '6 mois';
+                    switch (categorie) {
+                        case 'CRIME':
+                            duree = 24;
+                            classe = 'duree-crime';
+                            texte = '24 mois (2 ans)';
+                            break;
+                        case 'DELIT':
+                            duree = 18;
+                            classe = 'duree-delit';
+                            texte = '18 mois (1 an et demi)';
+                            break;
+                        default:
+                            duree = 6;
+                            classe = 'duree-contravention';
+                            texte = '6 mois';
+                    }
+
+                    dureeInfo.removeClass('duree-crime duree-delit duree-contravention')
+                        .addClass(classe)
+                        .html(
+                            `<strong><i class="fas fa-clock me-2"></i>Durée maximale de détention provisoire : ${texte}</strong>`
+                        )
+                        .slideDown();
+                } else {
+                    dureeInfo.slideUp();
                 }
+            });
 
-                dureeInfo.removeClass('duree-crime duree-delit duree-contravention')
-                    .addClass(classe)
-                    .html(
-                        `<strong><i class="fas fa-clock me-2"></i>Durée maximale de détention provisoire : ${texte}</strong>`
-                    )
-                    .slideDown();
-            } else {
-                dureeInfo.slideUp();
+            // Déclencher l'affichage si déjà sélectionné
+            if ($('#infraction_presume_id').val()) {
+                $('#infraction_presume_id').trigger('change');
             }
+
+            // Validation du formulaire
+            $('#detentionForm').on('submit', function(e) {
+                const detenuId = $('#detenu_id').val();
+                const infractionId = $('#infraction_presume_id').val();
+                const dateArrestation = $('#date_arrestation').val();
+                const lieuId = $('#lieu_detention_id').val();
+
+                if (!detenuId || !infractionId || !dateArrestation || !lieuId) {
+                    e.preventDefault();
+                    alert('Veuillez remplir tous les champs obligatoires.');
+                    return false;
+                }
+            });
         });
-
-        // Déclencher l'affichage si déjà sélectionné
-        if ($('#infraction_presume_id').val()) {
-            $('#infraction_presume_id').trigger('change');
-        }
-
-        // Validation du formulaire
-        $('#detentionForm').on('submit', function(e) {
-            const detenuId = $('#detenu_id').val();
-            const infractionId = $('#infraction_presume_id').val();
-            const dateArrestation = $('#date_arrestation').val();
-            const lieuId = $('#lieu_detention_id').val();
-
-            if (!detenuId || !infractionId || !dateArrestation || !lieuId) {
-                e.preventDefault();
-                alert('Veuillez remplir tous les champs obligatoires.');
-                return false;
-            }
-        });
-    });
     </script>
 </body>
 

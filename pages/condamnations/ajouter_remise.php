@@ -1,16 +1,14 @@
 <?php
-session_start();
-if (!isset($_SESSION['user_id'])) {
-    header('Location: ../../index.php');
-    exit();
-}
-
 require_once '../../includes/db.php';
 require_once '../../includes/classes/autoload.php';
+require_once '../../includes/auth.php';
+require_once '../../includes/csrf.php';
 require_once '../../includes/logs.php';
 
+Auth::requireAuth('../../index.php');
+
 $stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
-$stmt->execute([$_SESSION['user_id']]);
+$stmt->execute([Auth::id()]);
 $user = $stmt->fetch();
 $name = $user ? htmlspecialchars($user['nom'] . ' ' . $user['prenom']) : '';
 
@@ -38,6 +36,12 @@ $errors = [];
 $success = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    try {
+        CSRF::verify();
+    } catch (Exception $e) {
+        $errors[] = 'Session expirée. Veuillez recharger la page.';
+    }
+
     // Validation
     $required = ['type', 'motif', 'jours_remis', 'date_decision'];
     foreach ($required as $field) {
@@ -51,14 +55,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = "Le nombre de jours doit être supérieur à 0.";
     }
 
-    // Vérifier que la remise n'excède pas la peine totale
+    // CALCUL SIMPLIFIÉ: Peine totale (sans déduction DP)
     $joursRemis = (int)($_POST['jours_remis'] ?? 0);
     $peineTotal = (int)$condamnation['peine_jours_total'];
-    $joursDP = (int)$condamnation['jours_detention_provisoire_total'];
-    $peineNette = $peineTotal - $joursDP;
+    $peineNette = $peineTotal; // Pas de DP à déduire !
 
     if (($totalRemisesExistantes + $joursRemis) > $peineNette) {
-        $errors[] = "Le total des remises ne peut pas excéder la peine nette (" . $peineNette . " jours).";
+        $errors[] = "Le total des remises (" . ($totalRemisesExistantes + $joursRemis) . " jours) ne peut pas excéder la peine totale ($peineNette jours).";
+    }
+
+    // Vérifier date cohérente
+    if (!empty($_POST['date_decision']) && !empty($condamnation['date_jugement'])) {
+        if (strtotime($_POST['date_decision']) < strtotime($condamnation['date_jugement'])) {
+            $errors[] = "La date de décision ne peut pas précéder la date de jugement (" . date('d/m/Y', strtotime($condamnation['date_jugement'])) . ").";
+        }
     }
 
     if (empty($errors)) {
@@ -71,28 +81,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'autorite_decision' => trim($_POST['autorite_decision']) ?: null
         ];
 
-        $remiseId = $condamnationMgr->addRemise($condamnationId, $data, $_SESSION['user_id']);
+        try {
+            $remiseId = $condamnationMgr->addRemise($condamnationId, $data, Auth::id());
 
-        if ($remiseId) {
-            log_activity(
-                $pdo,
-                $_SESSION['user_id'],
-                'Ajout remise de peine',
-                "Condamnation ID: $condamnationId - Remise: $joursRemis jours"
-            );
+            if ($remiseId) {
+                log_activity(
+                    $pdo,
+                    Auth::id(),
+                    'Ajout remise de peine',
+                    "Condamnation ID: $condamnationId - Remise: $joursRemis jours"
+                );
 
-            $success = "Remise de peine ajoutée avec succès ! La date de libération a été recalculée.";
-            header("refresh:2;url=voir_condamnation.php?id=$condamnationId");
-        } else {
-            $errors[] = "Erreur lors de l'ajout de la remise de peine.";
+                $success = "✅ Remise de peine ajoutée avec succès ! La date de libération a été recalculée (sans déduction DP).";
+                header("refresh:2;url=voir_condamnation.php?id=$condamnationId");
+            }
+        } catch (Exception $e) {
+            $errors[] = $e->getMessage();
         }
     }
 }
 
-// Calculs pour affichage
+// Calculs pour affichage (SIMPLIFIÉS - pas de DP)
 $peineJoursTotal = (int)$condamnation['peine_jours_total'];
-$joursDP = (int)$condamnation['jours_detention_provisoire_total'];
-$peineNette = $peineJoursTotal - $joursDP;
+$peineNette = $peineJoursTotal; // Pas de DP
 $remisesDisponibles = $peineNette - $totalRemisesExistantes;
 ?>
 <!DOCTYPE html>
@@ -104,26 +115,34 @@ $remisesDisponibles = $peineNette - $totalRemisesExistantes;
     <meta content="width=device-width, initial-scale=1.0, shrink-to-fit=no" name="viewport" />
     <?php include '../../requires/link.php'; ?>
     <style>
-    .calcul-box {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        padding: 20px;
-        border-radius: 10px;
-        margin-bottom: 20px;
-    }
+        .calcul-box {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
 
-    .calcul-box h3 {
-        font-size: 2rem;
-        margin: 0;
-    }
+        .calcul-box h3 {
+            font-size: 2rem;
+            margin: 0;
+        }
 
-    .info-stat {
-        background: #f8f9fa;
-        padding: 15px;
-        border-radius: 8px;
-        border-left: 4px solid #28a745;
-        margin-bottom: 15px;
-    }
+        .info-stat {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #28a745;
+            margin-bottom: 15px;
+        }
+
+        .mode-badge {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 5px 15px;
+            border-radius: 5px;
+            font-size: 12px;
+        }
     </style>
 </head>
 
@@ -158,23 +177,23 @@ $remisesDisponibles = $peineNette - $totalRemisesExistantes;
                     </div>
 
                     <?php if (!empty($errors)): ?>
-                    <div class="alert alert-danger alert-dismissible fade show">
-                        <strong><i class="fas fa-exclamation-circle me-2"></i>Erreurs :</strong>
-                        <ul class="mb-0">
-                            <?php foreach ($errors as $error): ?>
-                            <li><?= htmlspecialchars($error) ?></li>
-                            <?php endforeach; ?>
-                        </ul>
-                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                    </div>
+                        <div class="alert alert-danger alert-dismissible fade show">
+                            <strong><i class="fas fa-exclamation-circle me-2"></i>Erreurs :</strong>
+                            <ul class="mb-0">
+                                <?php foreach ($errors as $error): ?>
+                                    <li><?= htmlspecialchars($error) ?></li>
+                                <?php endforeach; ?>
+                            </ul>
+                            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                        </div>
                     <?php endif; ?>
 
                     <?php if ($success): ?>
-                    <div class="alert alert-success alert-dismissible fade show">
-                        <strong><i class="fas fa-check-circle me-2"></i></strong>
-                        <?= htmlspecialchars($success) ?>
-                        <p class="mb-0"><i class="fas fa-spinner fa-spin me-2"></i>Redirection en cours...</p>
-                    </div>
+                        <div class="alert alert-success alert-dismissible fade show">
+                            <strong><i class="fas fa-check-circle me-2"></i></strong>
+                            <?= htmlspecialchars($success) ?>
+                            <p class="mb-0 mt-2"><i class="fas fa-spinner fa-spin me-2"></i>Redirection en cours...</p>
+                        </div>
                     <?php endif; ?>
 
                     <div class="row">
@@ -182,35 +201,50 @@ $remisesDisponibles = $peineNette - $totalRemisesExistantes;
                         <div class="col-lg-8">
                             <!-- Info condamnation -->
                             <div class="alert alert-info">
-                                <h5 class="mb-2">
-                                    <i class="fas fa-folder me-2"></i>
-                                    <?= htmlspecialchars($condamnation['numero_dossier']) ?>
-                                </h5>
-                                <p class="mb-1">
-                                    <strong>Détenu:</strong> <?= htmlspecialchars($condamnation['detenu_nom']) ?>
-                                </p>
-                                <p class="mb-1">
-                                    <strong>Infraction:</strong>
-                                    <?= htmlspecialchars($condamnation['infraction_libelle']) ?>
-                                </p>
-                                <p class="mb-0">
-                                    <strong>Peine:</strong> <?= (int)$condamnation['peine_valeur'] ?>
-                                    <?= strtolower($condamnation['peine_unite']) ?>(s)
-                                    (<?= $peineJoursTotal ?> jours)
-                                </p>
+                                <div class="d-flex justify-content-between align-items-start">
+                                    <div>
+                                        <h5 class="mb-2">
+                                            <i class="fas fa-folder me-2"></i>
+                                            <?= htmlspecialchars($condamnation['numero_dossier']) ?>
+                                            <span class="mode-badge ms-2">
+                                                <i class="fas fa-bolt me-1"></i>DIRECTE
+                                            </span>
+                                        </h5>
+                                        <p class="mb-1">
+                                            <strong>Détenu:</strong>
+                                            <?= htmlspecialchars($condamnation['detenu_nom']) ?>
+                                        </p>
+                                        <p class="mb-1">
+                                            <strong>Infraction:</strong>
+                                            <?= htmlspecialchars($condamnation['infraction_libelle']) ?>
+                                        </p>
+                                        <p class="mb-0">
+                                            <strong>Peine:</strong> <?= (int)$condamnation['peine_valeur'] ?>
+                                            <?= strtolower($condamnation['peine_unite']) ?>(s)
+                                            (<?= $peineJoursTotal ?> jours)
+                                        </p>
+                                    </div>
+                                    <div class="text-end">
+                                        <small class="text-muted d-block">⚠️ Condamnation Directe</small>
+                                        <small class="text-muted">0 jour DP déduit</small>
+                                    </div>
+                                </div>
                             </div>
 
                             <form method="POST">
+                                <?= CSRF::field() ?>
                                 <div class="card">
-                                    <div class="card-header">
-                                        <h4 class="card-title">
+                                    <div class="card-header bg-warning">
+                                        <h4 class="card-title mb-0">
                                             <i class="fas fa-gift me-2"></i>Informations de la Remise
                                         </h4>
                                     </div>
                                     <div class="card-body">
                                         <div class="mb-3">
-                                            <label class="form-label">Type de Remise <span
-                                                    class="text-danger">*</span></label>
+                                            <label class="form-label">
+                                                Type de Remise
+                                                <span class="text-danger">*</span>
+                                            </label>
                                             <select name="type" class="form-select" required>
                                                 <option value="">Sélectionner un type</option>
                                                 <option value="REMISE_GRACIEUSE">Remise Gracieuse</option>
@@ -222,26 +256,38 @@ $remisesDisponibles = $peineNette - $totalRemisesExistantes;
                                         </div>
 
                                         <div class="mb-3">
-                                            <label class="form-label">Motif <span class="text-danger">*</span></label>
+                                            <label class="form-label">
+                                                Motif
+                                                <span class="text-danger">*</span>
+                                            </label>
                                             <textarea name="motif" class="form-control" rows="3" required
                                                 placeholder="Décrivez les raisons de la remise de peine..."></textarea>
                                         </div>
 
                                         <div class="row">
                                             <div class="col-md-6 mb-3">
-                                                <label class="form-label">Jours Remis <span
-                                                        class="text-danger">*</span></label>
+                                                <label class="form-label">
+                                                    Jours Remis
+                                                    <span class="text-danger">*</span>
+                                                </label>
                                                 <input type="number" name="jours_remis" class="form-control" min="1"
                                                     max="<?= $remisesDisponibles ?>" required
                                                     placeholder="Nombre de jours">
-                                                <small class="text-muted">Maximum disponible: <?= $remisesDisponibles ?>
-                                                    jours</small>
+                                                <small class="text-muted">
+                                                    Maximum disponible: <?= $remisesDisponibles ?> jours
+                                                </small>
                                             </div>
                                             <div class="col-md-6 mb-3">
-                                                <label class="form-label">Date de Décision <span
-                                                        class="text-danger">*</span></label>
+                                                <label class="form-label">
+                                                    Date de Décision
+                                                    <span class="text-danger">*</span>
+                                                </label>
                                                 <input type="date" name="date_decision" class="form-control" required
+                                                    min="<?= $condamnation['date_jugement'] ?>"
                                                     max="<?= date('Y-m-d') ?>">
+                                                <small class="text-muted">
+                                                    Min: <?= date('d/m/Y', strtotime($condamnation['date_jugement'])) ?>
+                                                </small>
                                             </div>
                                         </div>
 
@@ -260,7 +306,12 @@ $remisesDisponibles = $peineNette - $totalRemisesExistantes;
                                         <div class="alert alert-warning">
                                             <i class="fas fa-info-circle me-2"></i>
                                             <strong>Important:</strong> La date de libération effective sera
-                                            automatiquement recalculée après l'ajout de cette remise.
+                                            automatiquement recalculée.
+                                            <br>
+                                            <small class="text-muted">
+                                                Formule: Date libération = Date jugement + Peine - Remises (pas de DP
+                                                pour condamnation directe)
+                                            </small>
                                         </div>
                                     </div>
                                 </div>
@@ -271,7 +322,7 @@ $remisesDisponibles = $peineNette - $totalRemisesExistantes;
                                             class="btn btn-secondary me-2">
                                             <i class="fas fa-times me-2"></i>Annuler
                                         </a>
-                                        <button type="submit" class="btn btn-success">
+                                        <button type="submit" class="btn btn-success btn-lg">
                                             <i class="fas fa-save me-2"></i>Ajouter la Remise
                                         </button>
                                     </div>
@@ -287,8 +338,8 @@ $remisesDisponibles = $peineNette - $totalRemisesExistantes;
                             </div>
 
                             <div class="card">
-                                <div class="card-header">
-                                    <h4 class="card-title">
+                                <div class="card-header bg-primary text-white">
+                                    <h4 class="card-title mb-0">
                                         <i class="fas fa-calculator me-2"></i>Calculs de Peine
                                     </h4>
                                 </div>
@@ -298,9 +349,12 @@ $remisesDisponibles = $peineNette - $totalRemisesExistantes;
                                         <h5 class="mb-0"><?= $peineJoursTotal ?> jours</h5>
                                     </div>
 
-                                    <div class="info-stat" style="border-color: #ffc107;">
-                                        <p class="text-muted mb-1">Détention Provisoire</p>
-                                        <h5 class="mb-0">- <?= $joursDP ?> jours</h5>
+                                    <!-- PAS de section DP (condamnation directe) -->
+                                    <div class="alert alert-info">
+                                        <i class="fas fa-bolt me-2"></i>
+                                        <strong>Condamnation Directe</strong>
+                                        <br>
+                                        <small>⚠️ Détention Provisoire: 0 jour (non applicable)</small>
                                     </div>
 
                                     <div class="info-stat" style="border-color: #28a745;">
@@ -314,43 +368,53 @@ $remisesDisponibles = $peineNette - $totalRemisesExistantes;
                                         <p class="text-muted mb-1">Peine Nette Restante</p>
                                         <h4 class="mb-0 text-primary"><?= $remisesDisponibles ?> jours</h4>
                                     </div>
+
+                                    <div class="alert alert-secondary mt-3">
+                                        <strong>Formule:</strong>
+                                        <p class="mb-0 mt-2">
+                                            <?= $peineJoursTotal ?> (peine)
+                                            <br>- <?= $totalRemisesExistantes ?> (remises)
+                                            <br>- 0 (DP)
+                                            <br>= <strong><?= $remisesDisponibles ?> jours</strong>
+                                        </p>
+                                    </div>
                                 </div>
                             </div>
 
                             <!-- Remises existantes -->
                             <?php if (!empty($remisesExistantes)): ?>
-                            <div class="card mt-3">
-                                <div class="card-header">
-                                    <h4 class="card-title">
-                                        <i class="fas fa-list me-2"></i>Remises Existantes
-                                    </h4>
-                                </div>
-                                <div class="card-body">
-                                    <div class="list-group">
-                                        <?php foreach ($remisesExistantes as $remise): ?>
-                                        <div class="list-group-item">
-                                            <div class="d-flex justify-content-between align-items-start">
-                                                <div>
-                                                    <h6 class="mb-1"><?= htmlspecialchars($remise['type']) ?></h6>
-                                                    <small class="text-muted">
-                                                        <?= date('d/m/Y', strtotime($remise['date_decision'])) ?>
-                                                    </small>
+                                <div class="card mt-3">
+                                    <div class="card-header bg-warning">
+                                        <h4 class="card-title mb-0">
+                                            <i class="fas fa-list me-2"></i>Remises Existantes
+                                        </h4>
+                                    </div>
+                                    <div class="card-body">
+                                        <div class="list-group">
+                                            <?php foreach ($remisesExistantes as $remise): ?>
+                                                <div class="list-group-item">
+                                                    <div class="d-flex justify-content-between align-items-start">
+                                                        <div>
+                                                            <h6 class="mb-1"><?= htmlspecialchars($remise['type']) ?></h6>
+                                                            <small class="text-muted">
+                                                                <?= date('d/m/Y', strtotime($remise['date_decision'])) ?>
+                                                            </small>
+                                                        </div>
+                                                        <span class="badge badge-success">
+                                                            -<?= (int)$remise['jours_remis'] ?> j
+                                                        </span>
+                                                    </div>
                                                 </div>
-                                                <span class="badge badge-success">
-                                                    -<?= (int)$remise['jours_remis'] ?> j
-                                                </span>
-                                            </div>
+                                            <?php endforeach; ?>
                                         </div>
-                                        <?php endforeach; ?>
                                     </div>
                                 </div>
-                            </div>
                             <?php endif; ?>
 
                             <!-- Dates actuelles -->
                             <div class="card mt-3">
-                                <div class="card-header">
-                                    <h4 class="card-title">
+                                <div class="card-header bg-success text-white">
+                                    <h4 class="card-title mb-0">
                                         <i class="fas fa-calendar me-2"></i>Dates Actuelles
                                     </h4>
                                 </div>
@@ -380,16 +444,18 @@ $remisesDisponibles = $peineNette - $totalRemisesExistantes;
 
     <?php include '../../requires/script.php'; ?>
     <script>
-    // Calculer automatiquement la nouvelle date de libération
-    document.querySelector('input[name="jours_remis"]').addEventListener('input', function() {
-        var joursRemis = parseInt(this.value) || 0;
-        var remisesExistantes = <?= $totalRemisesExistantes ?>;
-        var totalRemises = remisesExistantes + joursRemis;
+        $(document).ready(function() {
+            // Validation max jours
+            $('input[name="jours_remis"]').on('input', function() {
+                var joursRemis = parseInt($(this).val()) || 0;
+                var maxDisponible = <?= $remisesDisponibles ?>;
 
-        if (joursRemis > <?= $remisesDisponibles ?>) {
-            this.value = <?= $remisesDisponibles ?>;
-        }
-    });
+                if (joursRemis > maxDisponible) {
+                    $(this).val(maxDisponible);
+                    alert('Le nombre de jours ne peut pas dépasser ' + maxDisponible + ' jours');
+                }
+            });
+        });
     </script>
 </body>
 

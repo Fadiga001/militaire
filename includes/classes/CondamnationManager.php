@@ -1,8 +1,14 @@
 <?php
 
 /**
- * Classe CondamnationManager
- * Gestion complète des condamnations
+ * Classe CondamnationManager - CONDAMNATIONS DIRECTES UNIQUEMENT
+ * Gestion des condamnations sans détention provisoire préalable
+ * 
+ * RÈGLES MÉTIER:
+ * - Aucun champ DP (OIP, OMLP, mandat) n'est utilisé
+ * - Date début exécution = date jugement
+ * - Aucune déduction de jours
+ * - Détenu peut être LIBRE, EVADE, ou tout statut sauf DETENTION_PROVISOIRE
  */
 class CondamnationManager
 {
@@ -14,27 +20,82 @@ class CondamnationManager
     }
 
     /**
-     * Créer une nouvelle condamnation
+     * Créer une condamnation DIRECTE (sans DP)
      */
     public function create(array $data, int $userId): ?int
     {
         try {
             $this->pdo->beginTransaction();
 
+            // VALIDATION: Vérifier que le détenu n'a PAS de DP en cours
+            $checkDP = $this->pdo->prepare("
+                SELECT COUNT(*) as nb 
+                FROM detentions_provisoires 
+                WHERE detenu_id = ? AND statut = 'EN_COURS'
+            ");
+            $checkDP->execute([$data['detenu_id']]);
+            if ($checkDP->fetch()['nb'] > 0) {
+                throw new Exception(
+                    "Ce détenu a une détention provisoire en cours. " .
+                        "Utilisez le module 'Conversion DP → Condamnation' à la place."
+                );
+            }
+
+            // Vérifier unicité numéro dossier
+            $checkDossier = $this->pdo->prepare("
+                SELECT COUNT(*) FROM condamnations 
+                WHERE numero_dossier = ? AND is_deleted = FALSE
+            ");
+            $checkDossier->execute([$data['numero_dossier']]);
+            if ($checkDossier->fetchColumn() > 0) {
+                throw new Exception("Ce numéro de dossier existe déjà.");
+            }
+
+            // INSERTION - Aucun champ DP n'est rempli
             $sql = "INSERT INTO condamnations (
-                numero_dossier, detenu_id, infraction_id, infraction_details,
-                date_infraction, lieu_infraction, date_oip, date_omlp,
-                date_jugement, numero_jugement, tribunal, date_mandat_depot,
-                date_liberation_mandat, peine_valeur, peine_unite,
-                lieu_detention_id, date_debut_execution, observations,
-                statut, is_principale, created_by
+                numero_dossier, 
+                detenu_id, 
+                infraction_id, 
+                infraction_details,
+                date_infraction, 
+                lieu_infraction, 
+                date_jugement, 
+                numero_jugement, 
+                tribunal,
+                peine_valeur, 
+                peine_unite,
+                lieu_detention_id, 
+                date_debut_execution,
+                observations,
+                statut, 
+                is_principale, 
+                created_by,
+                -- FORCER les champs DP à NULL
+                date_oip,
+                date_omlp,
+                date_mandat_depot,
+                date_liberation_mandat,
+                jours_detention_provisoire_oip,
+                jours_detention_provisoire_mandat
             ) VALUES (
-                :numero_dossier, :detenu_id, :infraction_id, :infraction_details,
-                :date_infraction, :lieu_infraction, :date_oip, :date_omlp,
-                :date_jugement, :numero_jugement, :tribunal, :date_mandat_depot,
-                :date_liberation_mandat, :peine_valeur, :peine_unite,
-                :lieu_detention_id, :date_debut_execution, :observations,
-                :statut, :is_principale, :created_by
+                :numero_dossier, 
+                :detenu_id, 
+                :infraction_id, 
+                :infraction_details,
+                :date_infraction, 
+                :lieu_infraction, 
+                :date_jugement, 
+                :numero_jugement, 
+                :tribunal,
+                :peine_valeur, 
+                :peine_unite,
+                :lieu_detention_id, 
+                :date_jugement, -- date_debut_execution = date_jugement
+                :observations,
+                'EN_COURS', 
+                :is_principale, 
+                :created_by,
+                NULL, NULL, NULL, NULL, 0, 0 -- Tous les champs DP à NULL/0
             )";
 
             $stmt = $this->pdo->prepare($sql);
@@ -45,42 +106,46 @@ class CondamnationManager
                 ':infraction_details' => $data['infraction_details'] ?? null,
                 ':date_infraction' => $data['date_infraction'] ?? null,
                 ':lieu_infraction' => $data['lieu_infraction'] ?? null,
-                ':date_oip' => $data['date_oip'] ?? null,
-                ':date_omlp' => $data['date_omlp'] ?? null,
                 ':date_jugement' => $data['date_jugement'],
                 ':numero_jugement' => $data['numero_jugement'] ?? null,
                 ':tribunal' => $data['tribunal'] ?? null,
-                ':date_mandat_depot' => $data['date_mandat_depot'] ?? null,
-                ':date_liberation_mandat' => $data['date_liberation_mandat'] ?? null,
                 ':peine_valeur' => $data['peine_valeur'],
                 ':peine_unite' => $data['peine_unite'],
-                ':lieu_detention_id' => $data['lieu_detention_id'] ?? null,
-                ':date_debut_execution' => $data['date_debut_execution'] ?? null,
-                ':observations' => $data['observations'] ?? null,
-                ':statut' => $data['statut'] ?? 'EN_COURS',
+                ':lieu_detention_id' => $data['lieu_detention_id'],
+                ':observations' => $data['observations'] ?? 'CONDAMNATION DIRECTE - Sans détention provisoire préalable',
                 ':is_principale' => $data['is_principale'] ?? true,
                 ':created_by' => $userId
             ]);
 
             $condamnationId = (int)$this->pdo->lastInsertId();
 
-            // Créer une période de détention si lieu spécifié
-            if (!empty($data['lieu_detention_id']) && !empty($data['date_debut_execution'])) {
-                $this->createPeriodeDetention(
-                    $data['detenu_id'],
-                    $condamnationId,
-                    $data['lieu_detention_id'],
-                    $data['date_debut_execution'],
-                    $userId
-                );
-            }
+            // Mettre à jour le statut du détenu
+            $this->updateDetenuStatut($data['detenu_id'], $userId);
+
+            // Créer la période d'exécution
+            $this->createPeriodeDetention(
+                $data['detenu_id'],
+                $condamnationId,
+                $data['lieu_detention_id'],
+                $data['date_jugement'],
+                $userId
+            );
+
+            // Audit log
+            $this->logAudit($userId, 'CONDAMNATION_DIRECTE', $condamnationId, [
+                'numero_dossier' => $data['numero_dossier'],
+                'detenu_id' => $data['detenu_id'],
+                'peine' => $data['peine_valeur'] . ' ' . $data['peine_unite'],
+                'detention_provisoire' => 'NON',
+                'jours_deduits' => 0
+            ]);
 
             $this->pdo->commit();
             return $condamnationId;
-        } catch (PDOException $e) {
+        } catch (Exception $e) {
             $this->pdo->rollBack();
-            error_log("Erreur création condamnation: " . $e->getMessage());
-            return null;
+            error_log("Erreur création condamnation directe: " . $e->getMessage());
+            throw $e; // Relancer pour gestion dans le contrôleur
         }
     }
 
@@ -90,10 +155,18 @@ class CondamnationManager
     public function getById(int $id): ?array
     {
         $sql = "SELECT c.*,
-                d.nom_complet as detenu_nom, d.matricule as detenu_matricule,
-                i.libelle as infraction_libelle, i.categorie as infraction_categorie,
+                d.nom_complet as detenu_nom, 
+                d.matricule as detenu_matricule,
+                d.statut_actuel as detenu_statut,
+                g.libelle as detenu_grade,
+                u.nom as detenu_unite,
+                i.libelle as infraction_libelle, 
+                i.categorie as infraction_categorie,
                 l.nom as lieu_detention_nom,
+                l.ville as lieu_detention_ville,
+                -- Jours restants (sans déduction DP car = 0)
                 DATEDIFF(c.date_liberation_effective, NOW()) as jours_restants,
+                -- Niveau d'alerte
                 CASE 
                     WHEN c.date_liberation_effective < NOW() THEN 'LIBERABLE'
                     WHEN DATEDIFF(c.date_liberation_effective, NOW()) <= 1 THEN 'CRITIQUE'
@@ -101,9 +174,16 @@ class CondamnationManager
                     WHEN DATEDIFF(c.date_liberation_effective, NOW()) <= 14 THEN 'ATTENTION'
                     WHEN DATEDIFF(c.date_liberation_effective, NOW()) <= 30 THEN 'A_SUIVRE'
                     ELSE 'NORMAL'
-                END as alerte_niveau
+                END as alerte_niveau,
+                -- Progression (%)
+                ROUND(
+                    (DATEDIFF(NOW(), c.date_debut_execution) / 
+                     DATEDIFF(c.date_liberation_effective, c.date_debut_execution)) * 100, 1
+                ) as progression_pourcent
                 FROM condamnations c
                 INNER JOIN detenus d ON c.detenu_id = d.id
+                LEFT JOIN grades g ON d.grade_id = g.id
+                LEFT JOIN unites u ON d.unite_id = u.id
                 LEFT JOIN infractions i ON c.infraction_id = i.id
                 LEFT JOIN lieux_detention l ON c.lieu_detention_id = l.id
                 WHERE c.id = :id AND c.is_deleted = FALSE";
@@ -121,8 +201,11 @@ class CondamnationManager
     public function getAll(array $filters = []): array
     {
         $sql = "SELECT c.id, c.numero_dossier, c.date_jugement, c.statut,
-                d.nom_complet as detenu, d.matricule,
-                i.libelle as infraction, i.categorie,
+                d.nom_complet as detenu, 
+                d.matricule,
+                g.libelle as grade,
+                i.libelle as infraction, 
+                i.categorie,
                 CONCAT(c.peine_valeur, ' ', c.peine_unite) as peine,
                 c.date_liberation_effective,
                 DATEDIFF(c.date_liberation_effective, NOW()) as jours_restants,
@@ -137,6 +220,7 @@ class CondamnationManager
                 END as alerte_niveau
                 FROM condamnations c
                 INNER JOIN detenus d ON c.detenu_id = d.id
+                LEFT JOIN grades g ON d.grade_id = g.id
                 LEFT JOIN infractions i ON c.infraction_id = i.id
                 LEFT JOIN lieux_detention l ON c.lieu_detention_id = l.id
                 WHERE c.is_deleted = FALSE";
@@ -194,40 +278,40 @@ class CondamnationManager
     public function update(int $id, array $data, int $userId): bool
     {
         try {
+            // FORCER les champs DP à NULL/0 lors de la mise à jour
             $sql = "UPDATE condamnations SET
                 numero_dossier = :numero_dossier,
                 infraction_id = :infraction_id,
                 infraction_details = :infraction_details,
                 date_infraction = :date_infraction,
                 lieu_infraction = :lieu_infraction,
-                date_oip = :date_oip,
-                date_omlp = :date_omlp,
                 date_jugement = :date_jugement,
                 numero_jugement = :numero_jugement,
                 tribunal = :tribunal,
-                date_mandat_depot = :date_mandat_depot,
-                date_liberation_mandat = :date_liberation_mandat,
                 peine_valeur = :peine_valeur,
                 peine_unite = :peine_unite,
                 lieu_detention_id = :lieu_detention_id,
                 observations = :observations,
-                updated_by = :updated_by
+                updated_by = :updated_by,
+                -- FORCER DP à NULL
+                date_oip = NULL,
+                date_omlp = NULL,
+                date_mandat_depot = NULL,
+                date_liberation_mandat = NULL,
+                jours_detention_provisoire_oip = 0,
+                jours_detention_provisoire_mandat = 0
                 WHERE id = :id AND is_deleted = FALSE";
 
             $stmt = $this->pdo->prepare($sql);
-            return $stmt->execute([
+            $result = $stmt->execute([
                 ':numero_dossier' => $data['numero_dossier'],
                 ':infraction_id' => $data['infraction_id'],
                 ':infraction_details' => $data['infraction_details'] ?? null,
                 ':date_infraction' => $data['date_infraction'] ?? null,
                 ':lieu_infraction' => $data['lieu_infraction'] ?? null,
-                ':date_oip' => $data['date_oip'] ?? null,
-                ':date_omlp' => $data['date_omlp'] ?? null,
                 ':date_jugement' => $data['date_jugement'],
                 ':numero_jugement' => $data['numero_jugement'] ?? null,
                 ':tribunal' => $data['tribunal'] ?? null,
-                ':date_mandat_depot' => $data['date_mandat_depot'] ?? null,
-                ':date_liberation_mandat' => $data['date_liberation_mandat'] ?? null,
                 ':peine_valeur' => $data['peine_valeur'],
                 ':peine_unite' => $data['peine_unite'],
                 ':lieu_detention_id' => $data['lieu_detention_id'] ?? null,
@@ -235,6 +319,9 @@ class CondamnationManager
                 ':updated_by' => $userId,
                 ':id' => $id
             ]);
+
+            // Les triggers recalculeront automatiquement les dates
+            return $result;
         } catch (PDOException $e) {
             error_log("Erreur mise à jour condamnation: " . $e->getMessage());
             return false;
@@ -249,27 +336,69 @@ class CondamnationManager
         try {
             $this->pdo->beginTransaction();
 
-            // Appeler la procédure stockée
-            $stmt = $this->pdo->prepare("CALL sp_liberer_condamne(:id, :user_id, :motif)");
+            $condamnation = $this->getById($id);
+            if (!$condamnation) {
+                throw new Exception("Condamnation introuvable");
+            }
+
+            // Mettre à jour la condamnation
+            $stmt = $this->pdo->prepare("
+                UPDATE condamnations
+                SET statut = 'TERMINEE',
+                    date_liberation_reelle = NOW(),
+                    motif_liberation = :motif,
+                    updated_by = :user_id
+                WHERE id = :id
+            ");
             $stmt->execute([
                 ':id' => $id,
                 ':user_id' => $userId,
                 ':motif' => $motif
             ]);
 
-            // Fermer les périodes de détention
-            $condamnation = $this->getById($id);
-            if ($condamnation) {
-                $sql = "UPDATE periodes_detention 
-                        SET date_fin = NOW() 
-                        WHERE condamnation_id = :id AND date_fin IS NULL";
-                $stmt = $this->pdo->prepare($sql);
-                $stmt->execute([':id' => $id]);
+            // Mettre à jour le détenu SI c'est sa dernière condamnation
+            $checkAutres = $this->pdo->prepare("
+                SELECT COUNT(*) FROM condamnations 
+                WHERE detenu_id = :detenu_id 
+                  AND statut = 'EN_COURS'
+                  AND id != :id
+                  AND is_deleted = FALSE
+            ");
+            $checkAutres->execute([
+                ':detenu_id' => $condamnation['detenu_id'],
+                ':id' => $id
+            ]);
+
+            if ($checkAutres->fetchColumn() == 0) {
+                // Aucune autre condamnation active → LIBRE
+                $this->pdo->prepare("
+                    UPDATE detenus
+                    SET statut_actuel = 'LIBRE',
+                        date_changement_statut = NOW(),
+                        updated_by = :user_id
+                    WHERE id = :detenu_id
+                ")->execute([
+                    ':detenu_id' => $condamnation['detenu_id'],
+                    ':user_id' => $userId
+                ]);
             }
+
+            // Fermer les périodes de détention
+            $this->pdo->prepare("
+                UPDATE periodes_detention
+                SET date_fin = NOW()
+                WHERE condamnation_id = :id AND date_fin IS NULL
+            ")->execute([':id' => $id]);
+
+            // Audit
+            $this->logAudit($userId, 'LIBERATION_CONDAMNE', $id, [
+                'motif' => $motif,
+                'date_liberation' => date('Y-m-d H:i:s')
+            ]);
 
             $this->pdo->commit();
             return true;
-        } catch (PDOException $e) {
+        } catch (Exception $e) {
             $this->pdo->rollBack();
             error_log("Erreur libération: " . $e->getMessage());
             return false;
@@ -282,6 +411,33 @@ class CondamnationManager
     public function addRemise(int $condamnationId, array $data, int $userId): ?int
     {
         try {
+            $this->pdo->beginTransaction();
+
+            $condamnation = $this->getById($condamnationId);
+            if (!$condamnation || $condamnation['statut'] !== 'EN_COURS') {
+                throw new Exception("Condamnation invalide ou terminée");
+            }
+
+            // Calculer les remises existantes
+            $totalRemises = $this->getTotalRemises($condamnationId);
+            $peineNette = (int)$condamnation['peine_jours_total']; // Pas de DP à déduire
+
+            // Vérifier que total remises ≤ peine totale
+            if (($totalRemises + $data['jours_remis']) > $peineNette) {
+                throw new Exception(
+                    "Le total des remises ({$totalRemises} + {$data['jours_remis']}) " .
+                        "ne peut pas excéder la peine totale ({$peineNette} jours)."
+                );
+            }
+
+            // Vérifier date cohérente
+            if ($data['date_decision'] < $condamnation['date_jugement']) {
+                throw new Exception(
+                    "La date de décision ne peut pas précéder la date de jugement."
+                );
+            }
+
+            // Insertion
             $sql = "INSERT INTO remises_peine (
                 condamnation_id, type, motif, jours_remis,
                 date_decision, reference_decision, autorite_decision,
@@ -307,89 +463,35 @@ class CondamnationManager
             $remiseId = (int)$this->pdo->lastInsertId();
 
             // Recalculer la date de libération
-            $this->recalculerDateLiberation($condamnationId);
-
-            // Logger le recalcul (audit)
-            $calcStmt = $this->pdo->prepare("\n                SELECT \n                    c.id,\n                    c.date_liberation_theorique,\n                    c.date_liberation_effective,\n                    c.jours_detention_provisoire_total,\n                    (SELECT COALESCE(SUM(jours_remis), 0) FROM remises_peine WHERE condamnation_id = c.id) AS total_remises\n                FROM condamnations c\n                WHERE c.id = :id\n            ");
-            $calcStmt->execute([':id' => $condamnationId]);
-            $calc = $calcStmt->fetch();
-
-            if ($calc) {
-                $audit = $this->pdo->prepare("\n                    INSERT INTO audit_logs (user_id, action, entity_type, entity_id, new_values)\n                    VALUES (:user_id, 'RECALCUL_LIBERATION', 'CONDAMNATION', :entity_id, :payload)\n                ");
-                $audit->execute([
-                    ':user_id' => $userId,
-                    ':entity_id' => $condamnationId,
-                    ':payload' => json_encode([
-                        'date_liberation_theorique' => $calc['date_liberation_theorique'],
-                        'jours_dp' => (int)$calc['jours_detention_provisoire_total'],
-                        'total_remises' => (int)$calc['total_remises'],
-                        'date_liberation_effective' => $calc['date_liberation_effective'],
-                    ], JSON_UNESCAPED_UNICODE)
-                ]);
-            }
-
-            return $remiseId;
-        } catch (PDOException $e) {
-            error_log("Erreur ajout remise: " . $e->getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * Recalculer la date de libération avec remises
-     */
-    private function recalculerDateLiberation(int $condamnationId): void
-    {
-        // Récupérer le total des remises
-        $sql = "SELECT COALESCE(SUM(jours_remis), 0) as total_remises
-                FROM remises_peine
-                WHERE condamnation_id = :id";
-
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute([':id' => $condamnationId]);
-        $totalRemises = (int)$stmt->fetch()['total_remises'];
-
-        // Mettre à jour la date de libération
-        $sql = "UPDATE condamnations
+            $nouveauTotal = $totalRemises + $data['jours_remis'];
+            $this->pdo->prepare("
+                UPDATE condamnations
                 SET date_liberation_effective = DATE_SUB(
-                    DATE_SUB(date_liberation_theorique, INTERVAL jours_detention_provisoire_total DAY),
+                    date_liberation_theorique,
                     INTERVAL :remises DAY
                 )
-                WHERE id = :id";
+                WHERE id = :id
+            ")->execute([
+                ':remises' => $nouveauTotal,
+                ':id' => $condamnationId
+            ]);
 
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute([
-            ':remises' => $totalRemises,
-            ':id' => $condamnationId
-        ]);
-    }
+            // Audit
+            $this->logAudit($userId, 'AJOUT_REMISE', $condamnationId, [
+                'remise_id' => $remiseId,
+                'jours_remis' => $data['jours_remis'],
+                'type' => $data['type'],
+                'total_remises' => $nouveauTotal,
+                'nouvelle_date_liberation' => $this->getById($condamnationId)['date_liberation_effective']
+            ]);
 
-    /**
-     * Créer une période de détention
-     */
-    private function createPeriodeDetention(
-        int $detenuId,
-        int $condamnationId,
-        int $lieuId,
-        string $dateDebut,
-        int $userId
-    ): void {
-        $sql = "INSERT INTO periodes_detention (
-            detenu_id, condamnation_id, type, motif,
-            date_debut, lieu_detention_id, created_by
-        ) VALUES (
-            :detenu_id, :condamnation_id, 'EXECUTION_PEINE', 'Exécution de peine',
-            :date_debut, :lieu_id, :created_by
-        )";
-
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute([
-            ':detenu_id' => $detenuId,
-            ':condamnation_id' => $condamnationId,
-            ':date_debut' => $dateDebut,
-            ':lieu_id' => $lieuId,
-            ':created_by' => $userId
-        ]);
+            $this->pdo->commit();
+            return $remiseId;
+        } catch (Exception $e) {
+            $this->pdo->rollBack();
+            error_log("Erreur ajout remise: " . $e->getMessage());
+            throw $e;
+        }
     }
 
     /**
@@ -404,6 +506,20 @@ class CondamnationManager
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute([':id' => $condamnationId]);
         return $stmt->fetchAll();
+    }
+
+    /**
+     * Obtenir le total des jours de remises
+     */
+    private function getTotalRemises(int $condamnationId): int
+    {
+        $stmt = $this->pdo->prepare("
+            SELECT COALESCE(SUM(jours_remis), 0) 
+            FROM remises_peine
+            WHERE condamnation_id = ?
+        ");
+        $stmt->execute([$condamnationId]);
+        return (int)$stmt->fetchColumn();
     }
 
     /**
@@ -431,19 +547,103 @@ class CondamnationManager
         ");
         $stats['liberations_imminentes'] = (int)$stmt->fetch()['total'];
 
+        // Dépassées (à libérer)
+        $stmt = $this->pdo->query("
+            SELECT COUNT(*) as total 
+            FROM condamnations 
+            WHERE statut = 'EN_COURS' 
+            AND date_liberation_effective < NOW()
+            AND is_deleted = FALSE
+        ");
+        $stats['a_liberer'] = (int)$stmt->fetch()['total'];
+
         // Par infraction
         $stmt = $this->pdo->query("
-            SELECT i.libelle, COUNT(*) as nb
+            SELECT i.libelle, i.categorie, COUNT(*) as nb
             FROM condamnations c
             JOIN infractions i ON c.infraction_id = i.id
             WHERE c.statut = 'EN_COURS' AND c.is_deleted = FALSE
-            GROUP BY i.libelle
+            GROUP BY i.id, i.libelle, i.categorie
             ORDER BY nb DESC
             LIMIT 10
         ");
         $stats['par_infraction'] = $stmt->fetchAll();
 
+        // Par lieu
+        $stmt = $this->pdo->query("
+            SELECT l.nom, COUNT(*) as nb
+            FROM condamnations c
+            JOIN lieux_detention l ON c.lieu_detention_id = l.id
+            WHERE c.statut = 'EN_COURS' AND c.is_deleted = FALSE
+            GROUP BY l.id, l.nom
+            ORDER BY nb DESC
+        ");
+        $stats['par_lieu'] = $stmt->fetchAll();
+
         return $stats;
+    }
+
+    /**
+     * Mettre à jour le statut du détenu
+     */
+    private function updateDetenuStatut(int $detenuId, int $userId): void
+    {
+        $this->pdo->prepare("
+            UPDATE detenus
+            SET statut_actuel = 'CONDAMNE',
+                nombre_condamnations = nombre_condamnations + 1,
+                is_multrecidiviste = (nombre_condamnations + 1 > 1),
+                date_changement_statut = NOW(),
+                updated_by = :user_id
+            WHERE id = :detenu_id
+        ")->execute([
+            ':detenu_id' => $detenuId,
+            ':user_id' => $userId
+        ]);
+    }
+
+    /**
+     * Créer une période de détention
+     */
+    private function createPeriodeDetention(
+        int $detenuId,
+        int $condamnationId,
+        int $lieuId,
+        string $dateDebut,
+        int $userId
+    ): void {
+        $sql = "INSERT INTO periodes_detention (
+            detenu_id, condamnation_id, type, motif,
+            date_debut, lieu_detention_id, observations, created_by
+        ) VALUES (
+            :detenu_id, :condamnation_id, 'EXECUTION_PEINE', 'Condamnation directe - Exécution de peine',
+            :date_debut, :lieu_id, 'Aucune détention provisoire préalable', :created_by
+        )";
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute([
+            ':detenu_id' => $detenuId,
+            ':condamnation_id' => $condamnationId,
+            ':date_debut' => $dateDebut,
+            ':lieu_id' => $lieuId,
+            ':created_by' => $userId
+        ]);
+    }
+
+    /**
+     * Logger une action dans l'audit
+     */
+    private function logAudit(int $userId, string $action, int $entityId, array $data): void
+    {
+        $this->pdo->prepare("
+            INSERT INTO audit_logs (user_id, action, entity_type, entity_id, new_values)
+            VALUES (:user_id, :action, 'CONDAMNATION', :entity_id, :payload)
+        ")->execute([
+            ':user_id' => $userId,
+            ':action' => $action,
+            ':entity_id' => $entityId,
+            ':payload' => json_encode($data, JSON_UNESCAPED_UNICODE)
+        ]);
     }
 
     /**

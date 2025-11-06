@@ -1,4 +1,5 @@
 <?php
+
 /**
  * Classe DetenuManager
  * Gestion complète des détenus militaires
@@ -53,7 +54,7 @@ class DetenuManager
                 ':personne_contact_telephone' => $data['personne_contact_telephone'] ?? null,
                 ':personne_contact_relation' => $data['personne_contact_relation'] ?? null,
                 ':photo_path' => $data['photo_path'] ?? null,
-                ':statut_actuel' => $data['statut_actuel'] ?? 'DETENTION_PROVISOIRE',
+                ':statut_actuel' => $data['statut_actuel'] ?? NULL,
                 ':created_by' => $userId
             ]);
 
@@ -108,60 +109,172 @@ class DetenuManager
     /**
      * Liste tous les détenus avec filtres
      */
+    /**
+     * Liste tous les détenus avec filtres avancés
+     * 
+     * @param array $filters Filtres disponibles:
+     *   - statut: string (LIBRE, CONDAMNE, etc.)
+     *   - statut_exclus: string (exclure un statut, ex: DETENTION_PROVISOIRE)
+     *   - sans_dp_en_cours: bool (exclure détenus avec DP active)
+     *   - grade_id: int
+     *   - unite_id: int
+     *   - is_multrecidiviste: bool
+     *   - search: string (recherche nom/matricule)
+     *   - limit: int
+     *   - offset: int
+     * 
+     * @return array Liste des détenus
+     */
     public function getAll(array $filters = []): array
     {
-        $sql = "SELECT d.id, d.matricule, d.nom_complet, d.date_naissance,
-                TIMESTAMPDIFF(YEAR, d.date_naissance, NOW()) as age,
-                d.sexe, d.statut_actuel, d.is_multrecidiviste, d.nombre_condamnations,
-                g.libelle as grade, g.code as grade_code,
-                u.nom as unite, u.code as unite_code,
-                d.created_at
-                FROM detenus d
-                LEFT JOIN grades g ON d.grade_id = g.id
-                LEFT JOIN unites u ON d.unite_id = u.id
-                WHERE d.is_deleted = FALSE";
+        $sql = "SELECT d.*,
+            g.code as grade_code,
+            g.libelle as grade_libelle,
+            g.hierarchie as grade_hierarchie,
+            u.nom as unite_nom,
+            u.code as unite_code,
+            TIMESTAMPDIFF(YEAR, d.date_naissance, CURDATE()) as age,
+            -- Compter les condamnations actives
+            (SELECT COUNT(*) FROM condamnations c 
+             WHERE c.detenu_id = d.id 
+             AND c.statut = 'EN_COURS' 
+             AND c.is_deleted = FALSE) as nb_condamnations_actives,
+            -- Vérifier si DP en cours
+            EXISTS(
+                SELECT 1 FROM detentions_provisoires dp
+                WHERE dp.detenu_id = d.id 
+                AND dp.statut = 'EN_COURS'
+            ) as has_dp_en_cours
+            FROM detenus d
+            LEFT JOIN grades g ON d.grade_id = g.id
+            LEFT JOIN unites u ON d.unite_id = u.id
+            WHERE d.is_deleted = FALSE";
 
         $params = [];
 
-        // Filtres
+        // ============================================
+        // NOUVEAU: Filtre statut_null (statut_actuel IS NULL)
+        // ============================================
+        if (!empty($filters['statut_null'])) {
+            $sql .= " AND d.statut_actuel IS NULL";
+        }
+
+        // ============================================
+        // CORRECTION: Filtre statut_exclus (array OU string)
+        // ============================================
+        if (!empty($filters['statut_exclus'])) {
+            $statutExclus = $filters['statut_exclus'];
+
+            // Si c'est un tableau
+            if (is_array($statutExclus)) {
+                $placeholders = [];
+                foreach ($statutExclus as $index => $statut) {
+                    $placeholder = ":statut_exclus_$index";
+                    $placeholders[] = $placeholder;
+                    $params[$placeholder] = $statut;
+                }
+                $sql .= " AND d.statut_actuel NOT IN (" . implode(', ', $placeholders) . ")";
+            }
+            // Si c'est une chaîne
+            else {
+                $sql .= " AND d.statut_actuel != :statut_exclus";
+                $params[':statut_exclus'] = $statutExclus;
+            }
+        }
+
+        // ============================================
+        // Exclure détenus avec DP en cours
+        // ============================================
+        if (!empty($filters['sans_dp_en_cours'])) {
+            $sql .= " AND NOT EXISTS (
+            SELECT 1 FROM detentions_provisoires dp
+            WHERE dp.detenu_id = d.id 
+            AND dp.statut = 'EN_COURS'
+        )";
+        }
+
+        // ============================================
+        // Filtres existants
+        // ============================================
+
+        // Filtre par statut (inclusion)
         if (!empty($filters['statut'])) {
             $sql .= " AND d.statut_actuel = :statut";
             $params[':statut'] = $filters['statut'];
         }
 
+        // Filtre par grade
         if (!empty($filters['grade_id'])) {
             $sql .= " AND d.grade_id = :grade_id";
             $params[':grade_id'] = $filters['grade_id'];
         }
 
+        // Filtre par unité
         if (!empty($filters['unite_id'])) {
             $sql .= " AND d.unite_id = :unite_id";
             $params[':unite_id'] = $filters['unite_id'];
         }
 
-        if (!empty($filters['multrecidiviste'])) {
-            $sql .= " AND d.is_multrecidiviste = TRUE";
+        // Filtre multirécidiviste
+        if (isset($filters['is_multrecidiviste'])) {
+            $sql .= " AND d.is_multrecidiviste = :is_multrecidiviste";
+            $params[':is_multrecidiviste'] = $filters['is_multrecidiviste'] ? 1 : 0;
         }
 
+        // Recherche textuelle (nom, prénom, matricule)
         if (!empty($filters['search'])) {
-            $sql .= " AND (d.nom_complet LIKE :search OR d.matricule LIKE :search)";
+            $sql .= " AND (
+            d.nom LIKE :search 
+            OR d.prenoms LIKE :search 
+            OR d.matricule LIKE :search
+            OR CONCAT(d.nom, ' ', d.prenoms) LIKE :search
+        )";
             $params[':search'] = '%' . $filters['search'] . '%';
         }
 
-        $sql .= " ORDER BY d.created_at DESC";
+        // Tri
+        $orderBy = $filters['order_by'] ?? 'd.created_at';
+        $orderDir = $filters['order_dir'] ?? 'DESC';
 
-        if (!empty($filters['limit'])) {
-            $sql .= " LIMIT :limit";
+        // Sécurité: Whitelist des colonnes autorisées pour le tri
+        $allowedOrderBy = [
+            'd.created_at',
+            'd.nom',
+            'd.prenoms',
+            'd.matricule',
+            'd.statut_actuel',
+            'd.date_naissance',
+            'g.hierarchie'
+        ];
+        if (!in_array($orderBy, $allowedOrderBy)) {
+            $orderBy = 'd.created_at';
         }
 
+        $orderDir = strtoupper($orderDir) === 'ASC' ? 'ASC' : 'DESC';
+        $sql .= " ORDER BY $orderBy $orderDir";
+
+        // Pagination
+        if (!empty($filters['limit'])) {
+            $sql .= " LIMIT :limit";
+            if (!empty($filters['offset'])) {
+                $sql .= " OFFSET :offset";
+            }
+        }
+
+        // Préparation et exécution
         $stmt = $this->pdo->prepare($sql);
-        
+
+        // Bind des paramètres
         foreach ($params as $key => $value) {
             $stmt->bindValue($key, $value);
         }
 
+        // Bind des paramètres de pagination (PDO::PARAM_INT requis)
         if (!empty($filters['limit'])) {
             $stmt->bindValue(':limit', (int)$filters['limit'], PDO::PARAM_INT);
+            if (!empty($filters['offset'])) {
+                $stmt->bindValue(':offset', (int)$filters['offset'], PDO::PARAM_INT);
+            }
         }
 
         $stmt->execute();
@@ -403,7 +516,7 @@ class DetenuManager
 
         $stmt = $this->pdo->prepare($sql);
         $params = [':matricule' => $matricule];
-        
+
         if ($excludeId) {
             $params[':exclude_id'] = $excludeId;
         }

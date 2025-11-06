@@ -19,7 +19,11 @@ $errors = [];
 $success = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    try { CSRF::verify(); } catch (Exception $e) { $errors[] = 'Session expirée. Veuillez recharger la page.'; }
+    try {
+        CSRF::verify();
+    } catch (Exception $e) {
+        $errors[] = 'Session expirée. Veuillez recharger la page.';
+    }
     // Validation
     $required = ['nom', 'prenoms', 'sexe', 'grade_id', 'unite_id'];
     foreach ($required as $field) {
@@ -78,7 +82,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'personne_contact_telephone' => trim($_POST['personne_contact_telephone']) ?: null,
                 'personne_contact_relation' => trim($_POST['personne_contact_relation']) ?: null,
                 'photo_path' => $photoPath,
-                'statut_actuel' => $_POST['statut_actuel'] ?? 'DETENTION_PROVISOIRE'
+                'statut_actuel' => $_POST['statut_actuel'] ?? NULL
             ];
 
             $detenuId = $detenuMgr->create($data, Auth::id());
@@ -135,23 +139,23 @@ $unites = $refMgr->getAllUnites();
                     </div>
 
                     <?php if (!empty($errors)): ?>
-                        <div class="alert alert-danger alert-dismissible fade show">
-                            <strong><i class="fas fa-exclamation-circle me-2"></i>Erreurs :</strong>
-                            <ul class="mb-0">
-                                <?php foreach ($errors as $error): ?>
-                                    <li><?= htmlspecialchars($error) ?></li>
-                                <?php endforeach; ?>
-                            </ul>
-                            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                        </div>
+                    <div class="alert alert-danger alert-dismissible fade show">
+                        <strong><i class="fas fa-exclamation-circle me-2"></i>Erreurs :</strong>
+                        <ul class="mb-0">
+                            <?php foreach ($errors as $error): ?>
+                            <li><?= htmlspecialchars($error) ?></li>
+                            <?php endforeach; ?>
+                        </ul>
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
                     <?php endif; ?>
 
                     <?php if ($success): ?>
-                        <div class="alert alert-success alert-dismissible fade show">
-                            <strong><i class="fas fa-check-circle me-2"></i></strong>
-                            <?= htmlspecialchars($success) ?>
-                            <p class="mb-0"><i class="fas fa-spinner fa-spin me-2"></i>Redirection en cours...</p>
-                        </div>
+                    <div class="alert alert-success alert-dismissible fade show">
+                        <strong><i class="fas fa-check-circle me-2"></i></strong>
+                        <?= htmlspecialchars($success) ?>
+                        <p class="mb-0"><i class="fas fa-spinner fa-spin me-2"></i>Redirection en cours...</p>
+                    </div>
                     <?php endif; ?>
 
                     <form method="POST" enctype="multipart/form-data">
@@ -254,10 +258,10 @@ $unites = $refMgr->getAllUnites();
                                             <select name="grade_id" class="form-select" required>
                                                 <option value="">Sélectionner un grade</option>
                                                 <?php foreach ($grades as $grade): ?>
-                                                    <option value="<?= $grade['id'] ?>"
-                                                        <?= ($_POST['grade_id'] ?? '') == $grade['id'] ? 'selected' : '' ?>>
-                                                        <?= htmlspecialchars($grade['code'] . ' - ' . $grade['libelle']) ?>
-                                                    </option>
+                                                <option value="<?= $grade['id'] ?>"
+                                                    <?= ($_POST['grade_id'] ?? '') == $grade['id'] ? 'selected' : '' ?>>
+                                                    <?= htmlspecialchars($grade['code'] . ' - ' . $grade['libelle']) ?>
+                                                </option>
                                                 <?php endforeach; ?>
                                             </select>
                                         </div>
@@ -267,10 +271,10 @@ $unites = $refMgr->getAllUnites();
                                             <select name="unite_id" class="form-select" required>
                                                 <option value="">Sélectionner une unité</option>
                                                 <?php foreach ($unites as $unite): ?>
-                                                    <option value="<?= $unite['id'] ?>"
-                                                        <?= ($_POST['unite_id'] ?? '') == $unite['id'] ? 'selected' : '' ?>>
-                                                        <?= htmlspecialchars($unite['code'] . ' - ' . $unite['nom']) ?>
-                                                    </option>
+                                                <option value="<?= $unite['id'] ?>"
+                                                    <?= ($_POST['unite_id'] ?? '') == $unite['id'] ? 'selected' : '' ?>>
+                                                    <?= htmlspecialchars($unite['code'] . ' - ' . $unite['nom']) ?>
+                                                </option>
                                                 <?php endforeach; ?>
                                             </select>
                                         </div>
@@ -288,8 +292,6 @@ $unites = $refMgr->getAllUnites();
                                             <input type="date" name="date_incorporation" class="form-control"
                                                 value="<?= htmlspecialchars($_POST['date_incorporation'] ?? '') ?>">
                                         </div>
-
-                                        <input type="hidden" name="statut_actuel" value="DETENTION_PROVISOIRE">
                                     </div>
                                 </div>
 
